@@ -868,8 +868,8 @@ namespace MapMaker
                             SteamManager.startParameters.currentLevel = GameSession.currentLevel;
                             break;
                     }
-                    var UUID = Convert.ToInt32(MetaData["MapUUID"]);
-                    Plugin.CurrentMapUUID = UUID;
+                    var mapIntID = Convert.ToInt32(MetaData["MapUUID"]); // map IDs are not actually UUIDs but it's too late to rename the json property now
+                    Plugin.CurrentMapIntID = mapIntID;
                     return false;
                 }
                 return true;
@@ -949,8 +949,8 @@ namespace MapMaker
                                 SteamManager.startParameters.currentLevel = GameSession.currentLevel;
                                 break;
                         }
-                        var UUID = Convert.ToInt32(MetaData["MapUUID"]);
-                        Plugin.CurrentMapUUID = UUID;
+                        var mapIntID = Convert.ToInt32(MetaData["MapUUID"]); // map IDs are not actually UUIDs but it's too late to rename the json property now
+                        Plugin.CurrentMapIntID = mapIntID;
                         SceneManager.LoadScene((int)(6 + GameSession.CurrentLevel()), LoadSceneMode.Single);
                     }
                     else SceneManager.LoadScene("Level1");
@@ -1114,6 +1114,20 @@ namespace MapMaker
                 return false;
             }
         }
+        [HarmonyPatch(typeof(AchievementHandler))]
+        public static class AchievementHandlerPatches
+        {
+            // I don't know *why* the game's OnRoundEnded() function is in the AchievementHandler class of all things, but it is.
+            [HarmonyPatch(nameof(AchievementHandler.OnRoundEnded))]
+            [HarmonyPostfix]
+            public static void SendMapOnRoundEnd()
+            {
+                if (GameLobby.isOnlineGame && SteamManager.LocalPlayerIsLobbyOwner)
+                {
+                    
+                }
+            }
+        }
         [HarmonyPatch(typeof(SteamManager))]
         public class SteamManagerPatches
         {
@@ -1147,17 +1161,20 @@ namespace MapMaker
                         Plugin.MapJsons = JsonList.ToArray();
                         Plugin.MetaDataJsons = MetaDataList.ToArray();
                     }
+                    // wait though, doesn't this mean we pick a different first map every time somebody joins the lobby?
+                    // so if multiple people join, one of the maps will initially get skipped over.
+                    // honestly the easiest way to solve this is to probably keep this function as is and just clear every other map except the real first one
+                    // in the HostGame() patch.
                     Plugin.NextMapIndex = Plugin.RandomBagLevel();
                     ZipArchivePacket zipArchivePacket = new ZipArchivePacket
                     {
                         zip = Plugin.MyZipArchives[Plugin.NextMapIndex],
-                        length = Plugin.MyZipArchives.Length,
+                        amountOfZips = Plugin.MyZipArchives.Length,
                         id = Plugin.NextMapIndex
                     };
-                    NetworkingStuff.ZipChannel.SendMessage(zipArchivePacket);
+                    NetworkingStuff.OldZipChannel.SendMessage(zipArchivePacket);
                     //set all this stuff
-                    NetworkingStuff.MilisecondsToDelayBeforeResendingZip = NetworkingStuff.GetDelayForResendingZip();
-                    NetworkingStuff.HasRecevedLatestZip = new();
+                    NetworkingStuff.hasReceivedLatestZip = new();
                 }
             }
             [HarmonyPatch("OnLevelWasLoaded")]
@@ -1172,7 +1189,6 @@ namespace MapMaker
             [HarmonyPrefix]
             private static bool Awake_MapMaker_Plug2(ref PlayerInit hostPlayer, SteamManager __instance)
             {
-                
                 Plugin.CurrentMapIndex = Plugin.NextMapIndex;
                 Debug.Log($"starting first game on map {Plugin.CurrentMapIndex}");
                 Plugin.NextMapIndex = Plugin.RandomBagLevel();
@@ -1180,13 +1196,12 @@ namespace MapMaker
                 ZipArchivePacket zipArchivePacket = new ZipArchivePacket
                 {
                     zip = Plugin.MyZipArchives[Plugin.NextMapIndex],
-                    length = Plugin.MyZipArchives.Length,
+                    amountOfZips = Plugin.MyZipArchives.Length,
                     id = Plugin.NextMapIndex
                 };
-                NetworkingStuff.ZipChannel.SendMessage(zipArchivePacket);
+                NetworkingStuff.OldZipChannel.SendMessage(zipArchivePacket);
                 //set all this stuff
-                NetworkingStuff.MilisecondsToDelayBeforeResendingZip = NetworkingStuff.GetDelayForResendingZip();
-                NetworkingStuff.HasRecevedLatestZip = new();
+                NetworkingStuff.hasReceivedLatestZip = new();
                 //its max exsclusive min inclusinve
                 if (Plugin.MapJsons.Length != 0)
                 {
@@ -1210,8 +1225,8 @@ namespace MapMaker
                             SteamManager.startParameters.currentLevel = GameSession.currentLevel;
                             break;
                     }
-                    var UUID = Convert.ToInt32(MetaData["MapUUID"]);
-                    Plugin.CurrentMapUUID = UUID;
+                    var mapIntID = Convert.ToInt32(MetaData["MapUUID"]); // map IDs are not actually UUIDs but it's too late to rename the json property now
+                    Plugin.CurrentMapIntID = mapIntID;
                 }
                 __instance.currentLobby.SetData("LFM", "0");
                 __instance.currentLobby.SetFriendsOnly();
@@ -1289,13 +1304,12 @@ namespace MapMaker
                 ZipArchivePacket zipArchivePacket = new ZipArchivePacket
                 {
                     zip = Plugin.MyZipArchives[Plugin.NextMapIndex],
-                    length = Plugin.MyZipArchives.Length,
+                    amountOfZips = Plugin.MyZipArchives.Length,
                     id = Plugin.NextMapIndex
                 };
-                NetworkingStuff.ZipChannel.SendMessage(zipArchivePacket);
+                NetworkingStuff.OldZipChannel.SendMessage(zipArchivePacket);
                 //set all this stuff
-                NetworkingStuff.MilisecondsToDelayBeforeResendingZip = NetworkingStuff.GetDelayForResendingZip();
-                NetworkingStuff.HasRecevedLatestZip = new();
+                NetworkingStuff.hasReceivedLatestZip = new();
                 //its max exsclusive min inclusinve
                 if (Plugin.MapJsons.Length != 0)
                 {
@@ -1319,10 +1333,10 @@ namespace MapMaker
                             SteamManager.startParameters.currentLevel = GameSession.currentLevel;
                             break;
                     }
-                    var UUID = Convert.ToInt32(MetaData["MapUUID"]);
-                    Plugin.CurrentMapUUID = UUID;
+                    var mapIntID = Convert.ToInt32(MetaData["MapUUID"]); // map IDs are not actually UUIDs but it's too late to rename the json property now
+                    Plugin.CurrentMapIntID = mapIntID;
                 }
-                GameSession.CurrentLevel();
+                //GameSession.CurrentLevel(); // ... what? just calling this function on its own doesn't do anything, it's a getter.
                 SteamManager.startParameters.frameBufferSize = (byte)Host.CurrentDelayBufferSize;
                 SteamManager.startParameters.seed = (uint)Environment.TickCount;
                 SteamManager.startParameters.nrOfPlayers = (byte)(__instance.connectedPlayers.Count + 1);

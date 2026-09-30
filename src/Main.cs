@@ -23,7 +23,7 @@ using MapMaker.utils;
 namespace MapMaker
 {
     [BepInDependency("com.entwinedteam.entwined")]
-    [BepInPlugin("com.MLT.MapLoader", "MapLoader", "1.0.0")]
+    [BepInPlugin("com.MLT.MapLoader", "MapLoader", "1.2.0")]
     public class Plugin : BaseUnityPlugin
     {   
         // Developer mode! PLEASE TURN OFF BEFORE BUILDING!
@@ -38,7 +38,7 @@ namespace MapMaker
         public static List<ResizablePlatform> Platforms;
         public static int t;
         public static string mapsFolderPath; 
-        public static int CurrentMapUUID;
+        public static int CurrentMapIntID;
         public static int CurrentMapIndex;
         public static Fix OneByOneBlockMass = Fix.One;
         public static string[] MapJsons;
@@ -208,6 +208,7 @@ namespace MapMaker
             {
                 //fill the MapJsons array up
                 zipArchives2 = GetZipArchives();
+                NetworkingStuff.Start();
             }
             else
             {
@@ -485,7 +486,7 @@ namespace MapMaker
         // Check if value = CurrentMapId. used for CheckIfWeHaveCustomMapWithMapId
         public static bool ValueEqualsCurrentMapId(int ValueToCheck)
         {
-            if (ValueToCheck == CurrentMapUUID)
+            if (ValueToCheck == CurrentMapIntID)
             {
                 return true;
             }
@@ -508,7 +509,8 @@ namespace MapMaker
                     Dictionary<string, object> Meta = MiniJSON.Json.Deserialize(MetaDataJsons[i]) as Dictionary<string, object>;
                     Debug.Log(MetaDataJsons[i]);
                     var mapName = Meta["MapName"] as string;
-                    if (Convert.ToInt32(Meta["MapUUID"]) == CurrentMapUUID || IsReplay() || IsInTestMode)
+                    // map IDs are not actually UUIDs but it's too late to rename the json property now
+                    if (Convert.ToInt32(Meta["MapUUID"]) == CurrentMapIntID || IsReplay() || IsInTestMode)
                     {
                         Dictionary<string, object> Dict = MiniJSON.Json.Deserialize(mapJson) as Dictionary<string, object>;
                         SpawnPlatformsFromMap(Dict, i);
@@ -1248,7 +1250,7 @@ first = true");*/
                 //error if there are multiple maps with the same id
                 if (DoWeHaveMapWithMapId == MapIdCheckerThing.MultipleMapsFoundWithId)
                 {
-                    Debug.LogError($"ERROR! MULTIPLE MAPS WITH MAP UUID: {CurrentMapUUID} FOUND! UHAFYIGGAFYAIO");
+                    Debug.LogError($"ERROR! MULTIPLE MAPS WITH MAP ID: {CurrentMapIntID} FOUND! UHAFYIGGAFYAIO");
                     return;
                 }
                 else

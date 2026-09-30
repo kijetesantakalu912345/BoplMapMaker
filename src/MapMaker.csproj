@@ -4,7 +4,7 @@
     <TargetFramework>net472</TargetFramework>
     <AssemblyName>MapMaker</AssemblyName>
     <Description>Map maker mod for bopl battle</Description>
-    <Version>1.0.0</Version>
+    <Version>1.2.0</Version>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <LangVersion>latest</LangVersion>
     <OutputPath>..\bin\Debug</OutputPath>
@@ -38,7 +38,7 @@
       <HintPath>../lib/Entwined.dll</HintPath>
     </Reference>
     <Reference Include="Facepunch.Steamworks.Win64">
-      <HintPath>../lib/Facepunch.Steamworks.Win64.dll</HintPath>
+      <HintPath>../lib/Facepunch.Steamworks.Win64_publicized.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Mono.Posix">
