@@ -850,26 +850,36 @@ namespace MapMaker
                 //its max exsclusive min inclusinve
                 if (Plugin.MapJsons.Length != 0)
                 {
-                    Plugin.CurrentMapIndex = Plugin.RandomBagLevel();
-                    Dictionary<string, object> MetaData = MiniJSON.Json.Deserialize(Plugin.MetaDataJsons[Plugin.CurrentMapIndex]) as Dictionary<string, object>;
-                    var type = Convert.ToString(MetaData["MapType"]);
-                    switch (type)
+                    if (!GameLobby.isOnlineGame)
                     {
-                        case "space":
-                            GameSession.currentLevel = (byte)Plugin.SpaceMapId;
-                            SteamManager.startParameters.currentLevel = GameSession.currentLevel;
-                            break;
-                        case "snow":
-                            GameSession.currentLevel = (byte)Plugin.SnowMapId;
-                            SteamManager.startParameters.currentLevel = GameSession.currentLevel;
-                            break;
-                        default:
-                            GameSession.currentLevel = (byte)Plugin.GrassMapId;
-                            SteamManager.startParameters.currentLevel = GameSession.currentLevel;
-                            break;
+                        Plugin.CurrentMapIndex = Plugin.RandomBagLevel();
+                        Dictionary<string, object> MetaData = MiniJSON.Json.Deserialize(Plugin.MetaDataJsons[Plugin.CurrentMapIndex]) as Dictionary<string, object>;
+                        var type = Convert.ToString(MetaData["MapType"]);
+                        switch (type)
+                        {
+                            case "space":
+                                GameSession.currentLevel = (byte)Plugin.SpaceMapId;
+                                SteamManager.startParameters.currentLevel = GameSession.currentLevel;
+                                break;
+                            case "snow":
+                                GameSession.currentLevel = (byte)Plugin.SnowMapId;
+                                SteamManager.startParameters.currentLevel = GameSession.currentLevel;
+                                break;
+                            default:
+                                GameSession.currentLevel = (byte)Plugin.GrassMapId;
+                                SteamManager.startParameters.currentLevel = GameSession.currentLevel;
+                                break;
+                        }
+                        // map IDs are not actually UUIDs but it's too late to rename the json property now
+                        Plugin.CurrentMapIntID = Convert.ToInt32(MetaData["MapUUID"]);
                     }
-                    var mapIntID = Convert.ToInt32(MetaData["MapUUID"]); // map IDs are not actually UUIDs but it's too late to rename the json property now
-                    Plugin.CurrentMapIntID = mapIntID;
+                    else if (SteamManager.LocalPlayerIsLobbyOwner)
+                    {
+                        // on the host's side Plugin.CurrentMapIndex works like normal but for clients when playing online it's always forced to 0,
+                        // because now old maps get unloaded once the new one is sent.
+                        // (also `NetworkingStuff.StartSendingMapInChunks()` calls `Plugin.RandomBagLevel()`).
+                        NetworkingStuff.StartSendingMapInChunks();
+                    }
                     return false;
                 }
                 return true;
@@ -949,8 +959,8 @@ namespace MapMaker
                                 SteamManager.startParameters.currentLevel = GameSession.currentLevel;
                                 break;
                         }
-                        var mapIntID = Convert.ToInt32(MetaData["MapUUID"]); // map IDs are not actually UUIDs but it's too late to rename the json property now
-                        Plugin.CurrentMapIntID = mapIntID;
+                        // map IDs are not actually UUIDs but it's too late to rename the json property now
+                        Plugin.CurrentMapIntID = Convert.ToInt32(MetaData["MapUUID"]);
                         SceneManager.LoadScene((int)(6 + GameSession.CurrentLevel()), LoadSceneMode.Single);
                     }
                     else SceneManager.LoadScene("Level1");
@@ -1114,20 +1124,21 @@ namespace MapMaker
                 return false;
             }
         }
-        [HarmonyPatch(typeof(AchievementHandler))]
-        public static class AchievementHandlerPatches
-        {
-            // I don't know *why* the game's OnRoundEnded() function is in the AchievementHandler class of all things, but it is.
-            [HarmonyPatch(nameof(AchievementHandler.OnRoundEnded))]
-            [HarmonyPostfix]
-            public static void SendMapOnRoundEnd()
-            {
-                if (GameLobby.isOnlineGame && SteamManager.LocalPlayerIsLobbyOwner)
-                {
-                    
-                }
-            }
-        }
+        // [HarmonyPatch(typeof(AchievementHandler))]
+        // public static class AchievementHandlerPatches
+        // {
+        //     // I don't know *why* the game's OnRoundEnded() function is in the AchievementHandler class of all things, but it is.
+        //     // TO BE REMOVED ACTUALLY!!!!!!
+        //     [HarmonyPatch(nameof(AchievementHandler.OnRoundEnded))]
+        //     [HarmonyPostfix]
+        //     public static void SendMapOnRoundEnd()
+        //     {
+        //         if (GameLobby.isOnlineGame && SteamManager.LocalPlayerIsLobbyOwner)
+        //         {
+        //             NetworkingStuff.StartSendingMapInChunks();
+        //         }
+        //     }
+        // }
         [HarmonyPatch(typeof(SteamManager))]
         public class SteamManagerPatches
         {
@@ -1161,20 +1172,6 @@ namespace MapMaker
                         Plugin.MapJsons = JsonList.ToArray();
                         Plugin.MetaDataJsons = MetaDataList.ToArray();
                     }
-                    // wait though, doesn't this mean we pick a different first map every time somebody joins the lobby?
-                    // so if multiple people join, one of the maps will initially get skipped over.
-                    // honestly the easiest way to solve this is to probably keep this function as is and just clear every other map except the real first one
-                    // in the HostGame() patch.
-                    Plugin.NextMapIndex = Plugin.RandomBagLevel();
-                    ZipArchivePacket zipArchivePacket = new ZipArchivePacket
-                    {
-                        zip = Plugin.MyZipArchives[Plugin.NextMapIndex],
-                        amountOfZips = Plugin.MyZipArchives.Length,
-                        id = Plugin.NextMapIndex
-                    };
-                    NetworkingStuff.OldZipChannel.SendMessage(zipArchivePacket);
-                    //set all this stuff
-                    NetworkingStuff.hasReceivedLatestZip = new();
                 }
             }
             [HarmonyPatch("OnLevelWasLoaded")]
@@ -1189,197 +1186,33 @@ namespace MapMaker
             [HarmonyPrefix]
             private static bool Awake_MapMaker_Plug2(ref PlayerInit hostPlayer, SteamManager __instance)
             {
-                Plugin.CurrentMapIndex = Plugin.NextMapIndex;
-                Debug.Log($"starting first game on map {Plugin.CurrentMapIndex}");
-                Plugin.NextMapIndex = Plugin.RandomBagLevel();
-                Debug.Log($"next map will be {Plugin.NextMapIndex}");
-                ZipArchivePacket zipArchivePacket = new ZipArchivePacket
-                {
-                    zip = Plugin.MyZipArchives[Plugin.NextMapIndex],
-                    amountOfZips = Plugin.MyZipArchives.Length,
-                    id = Plugin.NextMapIndex
-                };
-                NetworkingStuff.OldZipChannel.SendMessage(zipArchivePacket);
-                //set all this stuff
-                NetworkingStuff.hasReceivedLatestZip = new();
-                //its max exsclusive min inclusinve
-                if (Plugin.MapJsons.Length != 0)
-                {
-                    UnityEngine.Debug.Log($"we have {Plugin.MapJsons.Length} maps");
-                    UnityEngine.Debug.Log($"map index is {Plugin.CurrentMapIndex}");
-                    Dictionary<string, object> MetaData = MiniJSON.Json.Deserialize(Plugin.MetaDataJsons[Plugin.CurrentMapIndex]) as Dictionary<string, object>;
-                    var type = Convert.ToString(MetaData["MapType"]);
-                    UnityEngine.Debug.Log("getting map type");
-                    switch (type)
-                    {
-                        case "space":
-                            GameSession.currentLevel = (byte)Plugin.SpaceMapId;
-                            SteamManager.startParameters.currentLevel = GameSession.currentLevel;
-                            break;
-                        case "snow":
-                            GameSession.currentLevel = (byte)Plugin.SnowMapId;
-                            SteamManager.startParameters.currentLevel = GameSession.currentLevel;
-                            break;
-                        default:
-                            GameSession.currentLevel = (byte)Plugin.GrassMapId;
-                            SteamManager.startParameters.currentLevel = GameSession.currentLevel;
-                            break;
-                    }
-                    var mapIntID = Convert.ToInt32(MetaData["MapUUID"]); // map IDs are not actually UUIDs but it's too late to rename the json property now
-                    Plugin.CurrentMapIntID = mapIntID;
-                }
+                Plugin.MapIndiciesLeft = []; // gets refilled once RandomBagLevel() is called again.
                 __instance.currentLobby.SetData("LFM", "0");
                 __instance.currentLobby.SetFriendsOnly();
                 __instance.currentLobby.SetJoinable(false);
-                SteamManager.startParameters = default(StartRequestPacket);
-                ushort num = __instance.nextStartGameSeq;
-                __instance.nextStartGameSeq = (ushort)(num + 1);
-                SteamManager.startParameters.seqNum = num;
-                SteamManager.startParameters.nrOfPlayers = (byte)(__instance.connectedPlayers.Count + 1);
-                SteamManager.startParameters.nrOfAbilites = (byte)Settings.Get().NumberOfAbilities;
-                SteamManager.startParameters.currentLevel = GameSession.CurrentLevel();
-                SteamManager.startParameters.seed = (uint)Environment.TickCount;
-                SteamManager.startParameters.p1_id = SteamClient.SteamId;
-                SteamManager.startParameters.p1_team = (byte)hostPlayer.team;
-                SteamManager.startParameters.p1_color = (byte)hostPlayer.color;
-                SteamManager.startParameters.p1_ability1 = (byte)hostPlayer.ability0;
-                SteamManager.startParameters.p1_ability2 = (byte)hostPlayer.ability1;
-                SteamManager.startParameters.p1_ability3 = (byte)hostPlayer.ability2;
-                if (__instance.connectedPlayers.Count > 0)
-                {
-                    SteamManager.startParameters.p2_id = __instance.connectedPlayers[0].id;
-                    SteamManager.startParameters.p2_team = __instance.connectedPlayers[0].lobby_team;
-                    SteamManager.startParameters.p2_color = (byte)__instance.connectedPlayers[0].lobby_color;
-                    SteamManager.startParameters.p2_ability1 = __instance.connectedPlayers[0].lobby_ability1;
-                    SteamManager.startParameters.p2_ability2 = __instance.connectedPlayers[0].lobby_ability2;
-                    SteamManager.startParameters.p2_ability3 = __instance.connectedPlayers[0].lobby_ability3;
-                }
-                if (__instance.connectedPlayers.Count > 1)
-                {
-                    SteamManager.startParameters.p3_id = __instance.connectedPlayers[1].id;
-                    SteamManager.startParameters.p3_team = __instance.connectedPlayers[1].lobby_team;
-                    SteamManager.startParameters.p3_color = (byte)__instance.connectedPlayers[1].lobby_color;
-                    SteamManager.startParameters.p3_ability1 = __instance.connectedPlayers[1].lobby_ability1;
-                    SteamManager.startParameters.p3_ability2 = __instance.connectedPlayers[1].lobby_ability2;
-                    SteamManager.startParameters.p3_ability3 = __instance.connectedPlayers[1].lobby_ability3;
-                }
-                if (__instance.connectedPlayers.Count > 2)
-                {
-                    SteamManager.startParameters.p4_id = __instance.connectedPlayers[2].id;
-                    SteamManager.startParameters.p4_team = __instance.connectedPlayers[2].lobby_team;
-                    SteamManager.startParameters.p4_color = (byte)__instance.connectedPlayers[2].lobby_color;
-                    SteamManager.startParameters.p4_ability1 = __instance.connectedPlayers[2].lobby_ability1;
-                    SteamManager.startParameters.p4_ability2 = __instance.connectedPlayers[2].lobby_ability2;
-                    SteamManager.startParameters.p4_ability3 = __instance.connectedPlayers[2].lobby_ability3;
-                }
-                byte b = (byte)(SteamManager.instance.dlc.HasDLC() ? 1 : 0);
-                for (int i = 0; i < __instance.connectedPlayers.Count; i++)
-                {
-                    if (__instance.connectedPlayers[i].ownsFullGame)
-                    {
-                        b = (byte)((int)b | 1 << i + 1);
-                    }
-                }
-                SteamManager.startParameters.isDemoMask = b;
-                SteamManager.instance.EncodeCurrentStartParameters_forReplay(ref SteamManager.instance.networkClient.EncodedStartRequest, SteamManager.startParameters, false);
-                Debug.Log($"Hosting next level. new level id for inputs: {Plugin.CurrentLevelIdForInputsOnlineThingy}");
-                Plugin.CurrentLevelIdForInputsOnlineThingy++;
-                var betterStartRequestPacket = new BetterStartRequestPacket
-                {
-                    startRequest = SteamManager.startParameters,
-                    MapIndex = Plugin.CurrentMapIndex,
-                    MapIdForInputStuff = Plugin.CurrentLevelIdForInputsOnlineThingy
-                };
-                NetworkingStuff.StartChannel.SendMessage(betterStartRequestPacket);
+                NetworkingStuff.isFirstMap = true;
+                NetworkingStuff.StartSendingMapInChunks();
                 return false;
             }
             [HarmonyPatch("HostNextLevel")]
             [HarmonyPrefix]
             private static bool Awake_MapMaker_Plug2(Player hostPlayer, NamedSpriteList abilityIcons, SteamManager __instance)
             {
-                Plugin.CurrentMapIndex = Plugin.NextMapIndex;
-                Debug.Log($"starting next level on map {Plugin.CurrentMapIndex}");
-                Plugin.NextMapIndex = Plugin.RandomBagLevel();
-                Debug.Log($"next map is {Plugin.NextMapIndex}");
-                ZipArchivePacket zipArchivePacket = new ZipArchivePacket
-                {
-                    zip = Plugin.MyZipArchives[Plugin.NextMapIndex],
-                    amountOfZips = Plugin.MyZipArchives.Length,
-                    id = Plugin.NextMapIndex
-                };
-                NetworkingStuff.OldZipChannel.SendMessage(zipArchivePacket);
-                //set all this stuff
-                NetworkingStuff.hasReceivedLatestZip = new();
-                //its max exsclusive min inclusinve
-                if (Plugin.MapJsons.Length != 0)
-                {
-                    UnityEngine.Debug.Log($"we have {Plugin.MapJsons.Length} maps");
-                    UnityEngine.Debug.Log($"map index is {Plugin.CurrentMapIndex}");
-                    Dictionary<string, object> MetaData = MiniJSON.Json.Deserialize(Plugin.MetaDataJsons[Plugin.CurrentMapIndex]) as Dictionary<string, object>;
-                    var type = Convert.ToString(MetaData["MapType"]);
-                    UnityEngine.Debug.Log("getting map type");
-                    switch (type)
-                    {
-                        case "space":
-                            GameSession.currentLevel = (byte)Plugin.SpaceMapId;
-                            SteamManager.startParameters.currentLevel = GameSession.currentLevel;
-                            break;
-                        case "snow":
-                            GameSession.currentLevel = (byte)Plugin.SnowMapId;
-                            SteamManager.startParameters.currentLevel = GameSession.currentLevel;
-                            break;
-                        default:
-                            GameSession.currentLevel = (byte)Plugin.GrassMapId;
-                            SteamManager.startParameters.currentLevel = GameSession.currentLevel;
-                            break;
-                    }
-                    var mapIntID = Convert.ToInt32(MetaData["MapUUID"]); // map IDs are not actually UUIDs but it's too late to rename the json property now
-                    Plugin.CurrentMapIntID = mapIntID;
-                }
-                //GameSession.CurrentLevel(); // ... what? just calling this function on its own doesn't do anything, it's a getter.
-                SteamManager.startParameters.frameBufferSize = (byte)Host.CurrentDelayBufferSize;
-                SteamManager.startParameters.seed = (uint)Environment.TickCount;
-                SteamManager.startParameters.nrOfPlayers = (byte)(__instance.connectedPlayers.Count + 1);
-                Debug.Log($"nrOfPlayers is {SteamManager.startParameters.nrOfPlayers}");
-                SteamManager.startParameters.currentLevel = GameSession.CurrentLevel();
-                SteamManager.startParameters.p1_ability1 = (byte)abilityIcons.IndexOf(hostPlayer.Abilities[0].name);
-                if (Settings.Get().NumberOfAbilities > 1)
-                {
-                    SteamManager.startParameters.p1_ability2 = (byte)abilityIcons.IndexOf(hostPlayer.Abilities[1].name);
-                }
-                if (Settings.Get().NumberOfAbilities > 2)
-                {
-                    SteamManager.startParameters.p1_ability3 = (byte)abilityIcons.IndexOf(hostPlayer.Abilities[2].name);
-                }
-                if (__instance.connectedPlayers.Count > 0)
-                {
-                    SteamManager.startParameters.p2_ability1 = __instance.connectedPlayers[0].lobby_ability1;
-                    SteamManager.startParameters.p2_ability2 = __instance.connectedPlayers[0].lobby_ability2;
-                    SteamManager.startParameters.p2_ability3 = __instance.connectedPlayers[0].lobby_ability3;
-                }
-                if (__instance.connectedPlayers.Count > 1)
-                {
-                    SteamManager.startParameters.p3_ability1 = __instance.connectedPlayers[1].lobby_ability1;
-                    SteamManager.startParameters.p3_ability2 = __instance.connectedPlayers[1].lobby_ability2;
-                    SteamManager.startParameters.p3_ability3 = __instance.connectedPlayers[1].lobby_ability3;
-                }
-                if (__instance.connectedPlayers.Count > 2)
-                {
-                    SteamManager.startParameters.p4_ability1 = __instance.connectedPlayers[2].lobby_ability1;
-                    SteamManager.startParameters.p4_ability2 = __instance.connectedPlayers[2].lobby_ability2;
-                    SteamManager.startParameters.p4_ability3 = __instance.connectedPlayers[2].lobby_ability3;
-                }
-                SteamManager.instance.EncodeCurrentStartParameters_forReplay(ref SteamManager.instance.networkClient.EncodedStartRequest, SteamManager.startParameters, false);
+                // yeah no just ignore this stuff, I ended up just structuring my code differently.
+                // I'll probably remove these comments later but for now I'll leave them just in case they're useful.
+                // // TODO: make sure desyncs are handled correctly!
+                // // hmmm...
+                // // ok yeah handling desyncs correctly will require some shenanigans, I'll have to see when I get to the point of testing.
+                // if (NetworkingStuff.isMapBeingTransmitted && !NetworkingStuff.hasBetterStartReqPacketBeenPrepared && !NetworkingStuff.hasStartReqPacketBeenSent)
+                // {
+                //     //NetworkingStuff.preparedBetterStartRequestPacket
+                // }
 
-                Plugin.CurrentLevelIdForInputsOnlineThingy++;
-                Debug.Log($"Hosting first level. new level id for inputs: {Plugin.CurrentLevelIdForInputsOnlineThingy}");
-                var betterStartRequestPacket = new BetterStartRequestPacket
-                {
-                    startRequest = SteamManager.startParameters,
-                    MapIndex = Plugin.CurrentMapIndex,
-                    MapIdForInputStuff = Plugin.CurrentLevelIdForInputsOnlineThingy
-                };
-                NetworkingStuff.StartChannel.SendMessage(betterStartRequestPacket); 
+                // if a desync happens (and a client tries to go to the next round before the round has ended on the host's screen)*
+                // (* I think that's the only desync case where this would happen but I'm not technically 10000% sure),
+                // reuse the old start request packet instead of trying to prepare a new one.
+                NetworkingStuff.SendBetterStartRequestPacket(prepStartReqPacketFirst: NetworkingStuff.newMapWasPickedBeforeAttemptedHostNextLevel);
+                NetworkingStuff.newMapWasPickedBeforeAttemptedHostNextLevel = false;
                 return false;
             }
         }
@@ -1408,6 +1241,7 @@ namespace MapMaker
                     }
                     Plugin.MapJsons = JsonList.ToArray();
                     Plugin.MetaDataJsons = MetaDataList.ToArray();
+                    Plugin.MapIndiciesLeft = []; // gets refilled once RandomBagLevel() is called again.
                 }
             }
             [HarmonyPatch("AnimateOutLevel")]
@@ -2122,6 +1956,11 @@ namespace MapMaker
             [HarmonyPrefix]
             private static bool Awake_MapMaker_Plug(int hostPlayerId, NamedSpriteList AbilityIcons, CharacterStatsList __instance)
             {
+                if (NetworkingStuff.isMapBeingTransmitted)
+                {
+                    NetworkingStuff.sendStartReqRightAfterMapSends = true;
+                    return false;
+                }
                 if (CharacterStatsList.isLoading)
                 {
                     return false;
@@ -2135,7 +1974,18 @@ namespace MapMaker
                 CharacterStatsList.ForceNextLevelImmediately();
                 return false;
             }
-        }
 
+            [HarmonyPatch(nameof(CharacterStatsList.TryStartNextLevel_online))]
+            [HarmonyPrefix]
+            private static bool MapMaker_dontGoToNextRoundIfActivelySendingAMap()
+            {
+                if (NetworkingStuff.isMapBeingTransmitted)
+                {
+                    NetworkingStuff.sendStartReqRightAfterMapSends = true;
+                    return false;
+                }
+                return true;
+            }
+        }
     }
 }

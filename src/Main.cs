@@ -88,7 +88,7 @@ namespace MapMaker
         public static List<PlayerInput> playerInputs = new();
         public static bool FirstUpdate = true;
         //used to chose a map from the random bag
-        public static List<int> MapIndexsLeft = new();
+        public static List<int> MapIndiciesLeft = new();
 
         // Map Ids
         public static readonly int GrassMapId = 0;
@@ -208,7 +208,6 @@ namespace MapMaker
             {
                 //fill the MapJsons array up
                 zipArchives2 = GetZipArchives();
-                NetworkingStuff.Start();
             }
             else
             {
@@ -1475,18 +1474,18 @@ first = true");*/
         }
         public static int RandomBagLevel()
         {
-            if (MapIndexsLeft.Count == 0)
+            if (MapIndiciesLeft.Count == 0)
             {
                 var i = 0;
                 foreach (var _ in zipArchives)
                 {
-                    MapIndexsLeft.Add(i);
+                    MapIndiciesLeft.Add(i);
                     i++;
                 }
             }
-            var NewMapIndexIndex = UnityEngine.Random.Range(0, MapIndexsLeft.Count);
-            var NewMapIndex = MapIndexsLeft[NewMapIndexIndex];
-            MapIndexsLeft.Remove(NewMapIndex);
+            var NewMapIndexIndex = UnityEngine.Random.Range(0, MapIndiciesLeft.Count);
+            var NewMapIndex = MapIndiciesLeft[NewMapIndexIndex];
+            MapIndiciesLeft.Remove(NewMapIndex);
             return NewMapIndex;
         }
         public static Spawner CreateSpawner(Vec2 Pos, Fix SimTimeBetweenSpawns, Vec2 SpawningVelocity, Fix angularVelocity, UnityEngine.Color color, Spawner.ObjectSpawnType spawnType = Spawner.ObjectSpawnType.None, PlatformType BoulderType = PlatformType.grass, bool UseSignal = false, int Signal = 0, bool IsTriggerSignal = false)
