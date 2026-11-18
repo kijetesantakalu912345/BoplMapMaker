@@ -189,6 +189,10 @@ namespace MapMaker
 
             return angleRadians;
         }
+        public static Fix MyCalculateAngle(Vec2 vec2)
+        {
+            return Fix.Atan2(vec2.y, vec2.x);
+        }
         public void SpawnGrenade(Vec2 pos, Fix angle, Fix scale, Vec2 StartVel, Fix StartAngularVelocity)
         {
             BoplBody boplBody = FixTransform.InstantiateFixed<BoplBody>(grenade, pos, angle);

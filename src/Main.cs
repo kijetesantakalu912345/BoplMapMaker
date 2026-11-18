@@ -202,6 +202,20 @@ namespace MapMaker
         public void Start()
         {
             Logger.LogWarning("######## Start() called");
+            for (Fix i = (Fix)(-5); i < (Fix)6; i += (Fix)1)
+            {
+                for (Fix j = (Fix)(-5); j < (Fix)6; j += (Fix)1)
+                {
+                    if (Fix.Sqrt(i * i + j * j) == 0)
+                    {
+                        Logger.LogInfo("skipping (" + i + ", " + j + "). returned by mine: " +  Spawner.MyCalculateAngle(new Vec2((Fix)(j), (Fix)(i))));
+                        continue;
+                    }
+                    Logger.LogInfo("x: " + i + " y: " + j + " | AI: " +
+                        Spawner.CalculateAngle(new Vec2((Fix)(j), (Fix)(i))) + " | mine: " +  Spawner.MyCalculateAngle(new Vec2((Fix)(j), (Fix)(i)))
+                    );
+                }
+            }
             ZipArchive[] zipArchives2;
             // If we are loading a replay the zip archive is already set
             if (!IsReplay())
