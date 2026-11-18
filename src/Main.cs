@@ -126,7 +126,7 @@ namespace MapMaker
         public static Fix BlastZone_XMax = (Fix)105L;
 
         public static Fix BlastZone_YMax = (Fix)58L;
-        // Used to keep the inputs from one level from incorectly being used for a difrent level.
+        // Used to keep the inputs from one level from incorectly being used for a different level.
         public static byte CurrentLevelIdForInputsOnlineThingy = 0;
         public enum MapIdCheckerThing
         {

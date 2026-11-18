@@ -107,13 +107,13 @@ namespace MapMaker
                     //if its on and its not inverted
                     if (!SignalStuff.SignalIsInverted && SignalStuff.IsOn())
                     {
-                        //contenue the path
+                        //continue the path
                         return true;
                     }
                     //if the signal is off and it is inverted
                     if (SignalStuff.SignalIsInverted && SignalStuff.IsOn())
                     {
-                        //contenue the path
+                        //continue the path
                         return true;
                     }
                     //signal is off and it isnt inverted or signal is on and it is inverted
@@ -136,13 +136,13 @@ namespace MapMaker
                     //if its on and its not inverted
                     if (!SignalStuff.SignalIsInverted && SignalStuff.IsOn())
                     {
-                        //contenue the path
+                        //continue the path
                         return true;
                     }
                     //if the signal is off and it is inverted
                     if (SignalStuff.SignalIsInverted && SignalStuff.IsOn())
                     {
-                        //contenue the path
+                        //continue the path
                         return true;
                     }
                     //signal is off and it isnt inverted or signal is on and it is inverted

@@ -14,7 +14,8 @@ namespace MapMaker
     {
         public static List<LogicOutput> LogicOutputs = new List<LogicOutput>();
         public static List<LogicInput> LogicInputs = new List<LogicInput>();
-        //these outputs will always have there gates run and if its output changes it runs the later ones. used for stuff that may update there output even if there input doesnt change
+        //these outputs will always have their gates run and if its output changes it runs the later ones.
+        //used for stuff that may update their output even if there input doesnt change.
         public static List<LogicOutput> LogicStartingOutputs = new List<LogicOutput>();
         //if true this logic gate will run every update. used for stuff that needs updated every frame. NOT SORTED!
         public static List<LogicGate> LogicGatesToAlwaysUpdate = new List<LogicGate>();
@@ -560,6 +561,9 @@ namespace MapMaker
                         //these logs magicly fixes the desyncs???? idk but it seems like it.
                         var consoleMessage = "running logic, gate.LastTimeUpdated != Updater.SimTimeSinceLevelLoaded. | tick: " + Updater.SimulationTicks.ToString();
                         // UnityEngine.Debug.Log(consoleMessage); ### IS THAT FOR DEBUG? ITS KINDA ANNOYING
+                        // (ki, who added this originally): nope it's not even for debug, somehow adding that console message appeared to fix desync issues.
+                        // map maker doesn't desync very often anyway though so I probably won't add it back unless desyncs specifically come back up as an issue.
+                        // although it does waste memory I'll probably leave setting the string to the var in case that somehow affects it.
                     }
                     else 
                     {

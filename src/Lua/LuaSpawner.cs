@@ -376,6 +376,7 @@ namespace MapMaker.Lua_stuff
             return null;
         }
 
+        // (based on chatgpt code, at least presumably given Spawner.cs's very similar but slightly different version)
         public static Fix CalculateAngle(Vec2 vec2)
         {
             // Vector (0, 1)
