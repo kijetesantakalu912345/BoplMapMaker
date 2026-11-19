@@ -992,6 +992,11 @@ namespace MapMaker
             [HarmonyPrefix]
             private static bool Awake_MapMaker_Plug(CharacterSelectHandler_online __instance, ref PlayerColors pcs)
             {
+                if (NetworkingStuff.isMapBeingTransmitted && NetworkingStuff.isFirstMap)
+                {
+                    Plugin.logger.LogInfo("force NOT starting game");
+                    return false; // in this case the start params won't be sent yet because the map hasn't been sent yet and it's easier to do it like this.
+                }
                 MonoBehaviour.print("FORCE START GAME");
                 if (pcs == null)
                 {
@@ -1124,6 +1129,23 @@ namespace MapMaker
                 return false;
             }
         }
+
+        // [HarmonyPatch("TryStartGame")]
+        // [HarmonyPrefix]
+        // public static bool DudeINeedYouToNotForceStartGameInstantlyWhenIHaveToSendMapsInMultiplePackets()
+        // {
+        //     if (CharacterSelectHandler_online.startButtonAvailable && CharacterSelectHandler_online.allReadyForMoreThanOneFrame
+        //         && !CharacterSelectHandler_online.selfRef.isStartingAGame)
+        //     {
+        //         if (SteamManager.instance.currentLobby.IsOwnedBy(SteamClient.SteamId))
+        //         {
+        //             CharacterSelectHandler_online.selfRef.isStartingAGame = true;
+        //             SteamManager.instance.HostGame(CharacterSelectHandler_online.selfRef.characterSelectBox.playerInit);
+        //             return false;
+        //         }
+        //     }
+        //     return true;
+        // }
         // [HarmonyPatch(typeof(AchievementHandler))]
         // public static class AchievementHandlerPatches
         // {
@@ -1191,6 +1213,7 @@ namespace MapMaker
                 __instance.currentLobby.SetFriendsOnly();
                 __instance.currentLobby.SetJoinable(false);
                 NetworkingStuff.isFirstMap = true;
+                NetworkingStuff.sendStartReqRightAfterMapSends = true;
                 NetworkingStuff.StartSendingMapInChunks();
                 return false;
             }

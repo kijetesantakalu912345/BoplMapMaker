@@ -82,6 +82,7 @@ namespace MapMaker
             StartChannel.OnMessage += OnStartPacket;
             var singleByteEntwiner = new GenericEntwiner<byte>(SingleByteToByteArray, ByteArrayToSingleByte);
             ChunkIDAckChannel = new EntwinedPacketChannel<byte>(Plugin.instance, singleByteEntwiner);
+            ChunkIDAckChannel.OnMessage += OnChunkAck;
             newMapSendingStatusChannel = new EntwinedPacketChannel<byte>(Plugin.instance, singleByteEntwiner);
             newMapSendingStatusChannel.OnMessage += OnNewMapSendingStatus;
 
@@ -132,8 +133,11 @@ namespace MapMaker
                         {
                             uint startIndex = (math.min(nextChunkNum, Host_LargeChunkAmountMinus1) * Host_LargeChunkSize)
                                       + (uint)(math.max(0, (int)nextChunkNum - (int)(Host_LargeChunkAmountMinus1 + 1)) * Host_SmallChunkSize);
-                            byte[] nextChunkBytes = new byte[nextChunkSize - HEADER_SIZE];
-                            NextMapByteChunks.GetRange((int)startIndex, (int)(nextChunkSize - HEADER_SIZE)).CopyTo(nextChunkBytes);
+                            byte[] nextChunkBytes = new byte[nextChunkSize];
+                            Plugin.logger.LogInfo("preparing map chunk | startIndex: " + startIndex + ", (nextChunkSize): " + (nextChunkSize)
+                            + ", range = (" + startIndex + ", " + (startIndex + (nextChunkSize)) + ")");
+                            Plugin.logger.LogInfo("size of NextMapByteChunks: " + NextMapByteChunks.Count);
+                            NextMapByteChunks.GetRange((int)startIndex, (int)(nextChunkSize)).CopyTo(nextChunkBytes);
                             var zipChunkPacket = new ZipChunkPacket()
                             {
                                 chunkNum = Host_EachPlayerNextChunkNum[player.id],
@@ -291,21 +295,33 @@ namespace MapMaker
                 return;
             }
             NextMapByteChunks.AddRange(zipChunkPacket.zipChunkBytes);
-            ChunkIDAckChannel.SendMessageTo(Client_CurrentChunkNum, sourceInfo.Connection);
+            // find lobby owner's connection object because the game uses a for loop for this *every time* apparently.
+            // also yeah for some reason just using the Connection object from the PacketSourceInfo instance doesn't seem to work,
+            for (int i = 0; i < SteamManager.instance.connectedPlayers.Count; i++)
+            {
+                if (SteamManager.instance.currentLobby.IsOwnedBy(SteamManager.instance.connectedPlayers[i].id))
+                {
+                    ChunkIDAckChannel.SendMessageTo(Client_CurrentChunkNum, SteamManager.instance.connectedPlayers[i].Connection);
+                }
+            }
             Client_CurrentChunkNum++;
         }
         public static void OnChunkAck(byte ackedChunk, PacketSourceInfo sourceInfo)
         {
             if (!SteamManager.LocalPlayerIsLobbyOwner)
             {
+                Plugin.logger.LogInfo("CAN'T ACK THIS BECAUSE WE ARE NOT THE HOST | " + sourceInfo.SenderSteamId + " acked chunk " + ackedChunk);
                 return;
             }
 
             Host_EachPlayerLastAckedChunkNum[sourceInfo.SenderSteamId] = ackedChunk;
+            Plugin.logger.LogInfo(sourceInfo.SenderSteamId + " acked chunk " + ackedChunk);
             foreach (SteamConnection player in SteamManager.instance.connectedPlayers)
             {
                 if (Host_EachPlayerLastAckedChunkNum[player.id] < Host_LargeChunkAmountMinus1 + Host_SmallChunkAmount)
                 {
+                    Plugin.logger.LogInfo("Host_EachPlayerLastAckedChunkNum[player.id] < Host_LargeChunkAmountMinus1 + Host_SmallChunkAmount:");
+                    Plugin.logger.LogInfo(Host_EachPlayerLastAckedChunkNum[player.id] + " < " + Host_LargeChunkAmountMinus1 + Host_SmallChunkAmount);
                     return;
                 }
             }
@@ -314,7 +330,12 @@ namespace MapMaker
             newMapSendingStatusChannel.SendMessage(0);
             if (sendStartReqRightAfterMapSends)
             {
+                Plugin.logger.LogInfo("sending start request immediately.");
                 SendBetterStartRequestPacket();
+            }
+            else
+            {
+                Plugin.logger.LogInfo("not sending start request immediately.");
             }
         }
         private static void PrepareBetterStartRequestPacket(int mapIndexToPrepare)
@@ -424,6 +445,10 @@ namespace MapMaker
                 startRequest = SteamManager.startParameters,
                 MapIdForInputStuff = Plugin.CurrentLevelIdForInputsOnlineThingy
             });
+            if(isFirstMap)
+            {
+                CharacterSelectHandler_online.ForceStartGame();
+            }
             hasStartReqPacketBeenSent = true;
             isFirstMap = false;
             sendStartReqRightAfterMapSends = false;
@@ -435,10 +460,12 @@ namespace MapMaker
             {
                 return;
             }
+            Plugin.logger.LogInfo("OnNewMapSendingStatus: typeByte = " + typeByte);
             isMapBeingTransmitted = typeByte == 1;
             if (isMapBeingTransmitted)
             {
                 Client_CurrentChunkNum = 0;
+                Plugin.logger.LogInfo("chunk num reset");
             }
         }
         public static byte[] ZipArchivePacketToByteArray(ZipArchivePacket archive)
@@ -525,7 +552,7 @@ namespace MapMaker
         public static BetterStartRequestPacket ByteArrayToBetterStartRequestPacket(byte[] bytes)
         {
             List<byte> bytes2 = bytes.ToList();
-            bytes2.RemoveRange(bytes2.Count - 4, 4);
+            bytes2.RemoveRange(bytes2.Count - 1, 1);
             var uintConversionArray = new byte[4];
             var ulongConversionArray = new byte[8];
             var ushortConversionArray = new byte[8];
