@@ -193,6 +193,7 @@ namespace MapMaker
             UnityEngine.Debug.Log($"sending map index {Plugin.NextMapIndex} in chunks now.");
             using (var memoryStream = new MemoryStream())
             {
+                // WAIT THIS IS GONNA RECOMPRESS MY TEST MAPS
                 // Create a new ZipArchive in the MemoryStream
                 using (var zipArchive = new ZipArchive(memoryStream, ZipArchiveMode.Create, true))
                 {
