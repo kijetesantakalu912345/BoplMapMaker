@@ -27,7 +27,7 @@ namespace MapMaker
         // OTHER MODS: you can check this field to see if map loader is currently trying to send a map (and thus possibly getting close-ish
         // to saturating the connection).
         // map loader will leave some space free in the unsent buffer so that it's not completely saturated but it will be able to use a lot of it.
-        // (look at the below 'MAX_CHUNK_PACKET_SIZE' and 'MAX_PREFERED_CHUNK_SIZE' to see exactly how much. though other map loader packets may
+        // (look at the below 'MAX_PACKET_SIZE' and 'MAX_PREFERED_PACKET_SIZE' to see exactly how much. though other map loader packets may
         // make the real total network usage ever so slightly higher.)
         // you can also publicize facepunch steamworks to access `cbPendingReliable`, to see how much data is currently in the unsent buffer,
         // and `SteamNetworkingUtils.SendBufferSize` to see how large the maximum buffer size is (default is 512 kib).
@@ -42,15 +42,15 @@ namespace MapMaker
         // nah we'll just create it right when we need it.
         //public static BetterStartRequestPacket preparedBetterStartRequestPacket; // note that we'll also have to set SteamManager.startParameters.
         public const uint HEADER_SIZE = 8 + 1; // 8 byte entwined header + 1 byte chunk number in our packet.
-        // MAX_CHUNK_PACKET_SIZE = 480 kib leaves (512-480) = 32 kib left in the buffer for the vanilla game and other mods in the worst case,
+        // MAX_PACKET_SIZE = 480 kib leaves (512-480) = 32 kib left in the buffer for the vanilla game and other mods in the worst case,
         // and gives a max map size of ((480 * 1024) - 9) * 256 = 119.9978027344 mebibytes = 125.82681600002621281 megabytes.
-        public const uint MAX_CHUNK_PACKET_SIZE = 480 * 1024;
-        // MAX_PREFERED_CHUNK_SIZE = 64 kib leaves 256 kib available if we send a chunk to all 4 players at the same time.
-        public const uint MAX_PREFERED_CHUNK_SIZE = 64 * 1024;
+        public const uint MAX_PACKET_SIZE = 480 * 1024;
+        // MAX_PREFERED_PACKET_SIZE = 64 kib leaves 256 kib available if we send a chunk to all 4 players at the same time.
+        public const uint MAX_PREFERED_PACKET_SIZE = 64 * 1024;
         public static Dictionary<SteamId, byte>  Host_EachPlayerNextChunkNum = new();
         public static Dictionary<SteamId, short>  Host_EachPlayerLastAckedChunkNum = new();
         public static Dictionary<SteamId, bool> OLD_I_THINK_hasFullyReceivedLatestZip = new();
-        // this might seem overkill but this will be quite useful if we have to send maps that are larger than MAX_PREFERED_CHUNK_SIZE.
+        // this might seem overkill but this will be quite useful if we have to send maps that are larger than MAX_PREFERED_PACKET_SIZE.
         // it's a lot easier to just calculate what all of the packet sizes will need to be once ahead of time before we start sending.
         //public static List<uint> Host_ChunkSizes = [];
         public static uint Host_LargeChunkSize = 0;
@@ -127,12 +127,19 @@ namespace MapMaker
                         {
                             nextChunkSize = Host_SmallChunkSize;
                         }
+                        Plugin.logger.LogInfo("nextChunkNum: " + nextChunkNum + ", Host_LargeChunkAmountMinus1: " + Host_LargeChunkAmountMinus1
+                        + "nextChunkSize == Host_SmallChunkSize: " + (nextChunkSize == Host_SmallChunkSize));
                         SteamNetworkingQuickConnectionStatus quickStatus = new();
                         SteamNetworkingSockets.Internal.GetQuickConnectionStatus(player.Connection, ref quickStatus);
                         if (SteamNetworkingUtils.SendBufferSize - quickStatus.CbPendingReliable >= nextChunkSize)
                         {
-                            uint startIndex = (math.min(nextChunkNum, Host_LargeChunkAmountMinus1) * Host_LargeChunkSize)
+                            uint startIndex = (math.min(nextChunkNum, Host_LargeChunkAmountMinus1 + 1) * Host_LargeChunkSize)
                                       + (uint)(math.max(0, (int)nextChunkNum - (int)(Host_LargeChunkAmountMinus1 + 1)) * Host_SmallChunkSize);
+                            if (nextChunkNum == 0)
+                            {
+                                startIndex = 0;
+                            }
+
                             byte[] nextChunkBytes = new byte[nextChunkSize];
                             Plugin.logger.LogInfo("preparing map chunk | startIndex: " + startIndex + ", (nextChunkSize): " + (nextChunkSize)
                             + ", range = (" + startIndex + ", " + (startIndex + (nextChunkSize)) + ")");
@@ -201,8 +208,9 @@ namespace MapMaker
                 }
                 NextMapByteChunks = memoryStream.ToArray().ToList();
             }
-            uint maxPreferedFileSize = MAX_PREFERED_CHUNK_SIZE - HEADER_SIZE;
-            uint maxFileSize = (MAX_CHUNK_PACKET_SIZE - HEADER_SIZE) * 256;
+            uint maxPreferedFileSize = MAX_PREFERED_PACKET_SIZE - HEADER_SIZE;
+            uint maxFileSize = (MAX_PACKET_SIZE - HEADER_SIZE) * 256;
+            Plugin.logger.LogInfo("preparing to send map that is " + NextMapByteChunks.Count + " bytes large");
             if (NextMapByteChunks.Count > maxFileSize)
             {
                 Plugin.logger.LogWarning("map file is too large to send! (" + NextMapByteChunks.Count + " bytes > " + maxFileSize + " bytes)");
@@ -212,6 +220,7 @@ namespace MapMaker
             }
             else if (NextMapByteChunks.Count <= maxPreferedFileSize) // use 1 chunk
             {
+                Plugin.logger.LogInfo("preparing to send map in 1 chunk");
                 Host_LargeChunkSize = (uint)NextMapByteChunks.Count;
                 Host_LargeChunkAmountMinus1 = 0;
                 Host_SmallChunkAmount = 0;
@@ -219,6 +228,7 @@ namespace MapMaker
             }
             else if (NextMapByteChunks.Count <= maxPreferedFileSize * 256) // use the amount of maxPreferedFileSize chunks we need + 1 small chunk if needed
             {
+                Plugin.logger.LogInfo("preparing to send map within <= 64 kib chunks");
                 Host_LargeChunkAmountMinus1 = ((uint)NextMapByteChunks.Count / maxPreferedFileSize) - 1; // integer division, not floating point division!
                 Host_SmallChunkSize = (uint)(NextMapByteChunks.Count % maxPreferedFileSize);
                 if (Host_SmallChunkSize > 0)
@@ -236,6 +246,7 @@ namespace MapMaker
                 // yeah apparently the division ends up being the calculation that gives the smaller size.
                 // the more I think about it it's probably better that we only have 1 large chunk and 255 small chunks
                 // instead of 255 large chunks and 1 small chunk in this case, because we leave the buffer less saturated.
+                Plugin.logger.LogInfo("preparing to send map that is of an unprefered size");
                 Host_SmallChunkSize = (uint)NextMapByteChunks.Count / 256u; // again, integer division, not floating point division!
                 Host_LargeChunkSize = (uint)NextMapByteChunks.Count - Host_SmallChunkSize;
                 Host_LargeChunkAmountMinus1 = 0;
@@ -321,7 +332,7 @@ namespace MapMaker
                 if (Host_EachPlayerLastAckedChunkNum[player.id] < Host_LargeChunkAmountMinus1 + Host_SmallChunkAmount)
                 {
                     Plugin.logger.LogInfo("Host_EachPlayerLastAckedChunkNum[player.id] < Host_LargeChunkAmountMinus1 + Host_SmallChunkAmount:");
-                    Plugin.logger.LogInfo(Host_EachPlayerLastAckedChunkNum[player.id] + " < " + Host_LargeChunkAmountMinus1 + Host_SmallChunkAmount);
+                    Plugin.logger.LogInfo(Host_EachPlayerLastAckedChunkNum[player.id] + " < " + (Host_LargeChunkAmountMinus1 + Host_SmallChunkAmount));
                     return;
                 }
             }
