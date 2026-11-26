@@ -257,7 +257,7 @@ namespace MapMaker
             while (!Plugin.MapsUsableOnline[Plugin.NextMapIndex])
             {
                 Plugin.logger.LogWarning("Can't send map index " + Plugin.NextMapIndex + " because it is too large to send online, re-rolling...");
-                Plugin.RandomBagLevel();
+                Plugin.NextMapIndex = Plugin.RandomBagLevel();
             }
             UnityEngine.Debug.Log($"sending map index {Plugin.NextMapIndex} in chunks now.");
             if (!Plugin.CONFIG_forceDoNotReloadMapsFromStorageOnline.Value)
