@@ -20,6 +20,9 @@ using System.Collections;
 using static MapMaker.PipeStuff;
 using TMPro;
 using MapMaker.utils;
+using System.IO.Hashing;
+using BepInEx.Configuration;
+
 namespace MapMaker
 {
     [BepInDependency("com.entwinedteam.entwined")]
@@ -134,15 +137,38 @@ namespace MapMaker
             NoMapFoundWithId,
             MultipleMapsFoundWithId
         }
-        public static MemoryStream[] MyZipArchiveStreams = [];
+        public static ConfigEntry<bool> CONFIG_forceDoNotReloadMapsFromStorageOnline;
+        public static List<bool> MapsUsableOnline = []; // false where a map is too large to send, true elsewhere.
+        public static int numOfMapsUsableOnline = 0;
+        public static List<uint> MapCRC32Checksums = []; // dependent on the value of CONFIG_forceDoNotReloadMapsFromStorageOnline
+        //public static List<string> MapFilePaths = []; // dependent on the value of CONFIG_forceDoNotReloadMapsFromStorageOnline
+        //public static MemoryStream[] MyZipArchiveStreams = [];
+        // THIS IS ONLY USED WHEN IT IS ENABLED IN THE CONFIG, BECAUSE IT WASTES MEMORY TO AVOID RE-LOADING THE MAP FROM DISK WHEN SENDING IT TO OTHER PLAYERS
+        // ONLINE, WHICH USUALLY ISN'T A TRADE OFF THAT IS WORTH IT!
+        public static List<List<byte>> cachedMapRawBytes = [];
+        public static List<FileStream> MapFileStreams = [];
 
         //public static bool noMapsCheckHasSpawnedText = false;
 
         private void Awake()
         {
-
             // Define the instance
             instance = this;
+
+            // load config value(s)
+            // maybe a setting for always being fine recompressing maps could be added but ehh...
+            // probably not worth the extra implementation effort and time. at least not right now.
+            CONFIG_forceDoNotReloadMapsFromStorageOnline = Config.Bind(
+                "Online settings",
+                "forceDoNotReloadMapsFromStorageOnline",
+                false,
+                "Save an extra copy of each map in memory so that when hosting an online match, when sending the next map after a round ends, "
+                + "the map file's raw bytes are loaded from memory instead of being loaded from disk.\n"
+                + "Enabling this setting is generally not worth it because it increases memory usage a lot for a fairly small gain, "
+                + "but if you have a lot of RAM or if you have very slow storage drives it might be worth it for you.\n"
+                + "This option only exists due to some weird shenanigans with C#'s ZipArchive class, having no public way to read the raw bytes of the zip, "
+                + "only publicly being able to read the contents of the file/folder entries contained in the zip."
+            );
 
             // Load the plugin
             NetworkingStuff.Awake();
@@ -204,7 +230,15 @@ namespace MapMaker
         {
             Logger.LogWarning("######## Start() called");
             // 268435456 is what the max send rate seemed to get capped to when I did (max int) - 1 when I read the config value back.
-            Steamworks.SteamNetworkingUtils.SetConfigInt(Steamworks.NetConfig.SendRateMax, 268435456);
+            // hm...
+            // this value seems to be kinda random?
+            // maybe I need to effectively do what boplfix does...
+            // welp the docs don't seem to say anything about spamming calls to this function so I mean I can probably just-
+            int i_retryForBetterSendRateMax = 0;
+            while (i_retryForBetterSendRateMax < 100 && Steamworks.SteamNetworkingUtils.GetConfigInt(Steamworks.NetConfig.SendRateMax) < 1_000_000)
+            {
+                Steamworks.SteamNetworkingUtils.SetConfigInt(Steamworks.NetConfig.SendRateMax, 268435456);
+            }
             Logger.LogInfo("max send rate: " + Steamworks.SteamNetworkingUtils.GetConfigInt(Steamworks.NetConfig.SendRateMax));
 
             for (Fix i = (Fix)(-5); i < (Fix)6; i += (Fix)1)
@@ -1377,18 +1411,75 @@ first = true");*/
             // Remove one as maps use a zero based index
             return int.Parse(cleaned) - 1;
         }
-        
-        public static Tuple<ZipArchive, MemoryStream> UnzipFile(string zipFilePath)
+
+        // trying to put this in a function is just straight up leaking memory for some reason...
+        // oh well, it's not a huge deal to just repeat the boilerplate a few times.
+        // public static byte[] ReadFileStreamToByteArray(FileStream fileStream)
+        // {
+        //     using (fileStream)
+        //     {
+        //         // boilerplate stolen from https://learn.microsoft.com/en-us/dotnet/api/system.io.filestream.read?view=net-11.0
+        //         byte[] byteArray = new byte[fileStream.Length];
+        //         int numBytesToRead = (int)fileStream.Length;
+        //         int numBytesRead = 0;
+        //         while (numBytesToRead > 0)
+        //         {
+        //             int n = fileStream.Read(byteArray, numBytesRead, numBytesToRead);
+        //             // Break when the end of the file is reached.
+        //             if (n == 0)
+        //             {
+        //                 break;
+        //             }
+        //             numBytesRead += n;
+        //             numBytesToRead -= n;
+        //         }
+        //         return byteArray;
+        //     }
+        // }
+
+        public static ZipArchive UnzipFile(string zipFilePath, bool doCRC32AndSaveStream = true, bool cacheRawBytes = false)
         {
-            ZipArchive archive = null;
-            // I'm not exactly a fan of this but I have to do this to be able to dodge recompressing the zips when they get sent.
-            MemoryStream memStream = new MemoryStream();
-            using(FileStream zipStream = new(zipFilePath, FileMode.Open))
+            // doesn't seem to end up leaking memory as long as you're careful?
+            // if you're modifying this function make sure the memory usage doesn't increase by the size of your maps when launching the game
+            // (or potentially by twice the size of your maps?)
+            // after the change, because I noticed that happening when I was working on it and had to make sure that it wasn't doing that.
+            // if this does leak memory on its own there's not really a ton that can be done about it due to how `ZipArchive` works.
+            // at the very least, the least amount of memory is wasted with the function exactly as it is at time of writing.
+            FileStream zipStream = new(zipFilePath, FileMode.Open);
+
+            MapsUsableOnline.Add(zipStream.Length <= NetworkingStuff.MAX_FILE_SIZE);
+            // THIS CAUSES A MEMORY LEAK APPARENTLY! though only the size of your maps instead of twice the size of your maps?
+            // it's probably because we need to not dispose `zipStream` here... elsewhere it'd probably work but I also don't want to risk it.
+            // maybe it was a coincidence????
+            // ok look whatever I'm just gonna leave it as is, it works and isn't leaking memory so it's fine.
+            // byte[] fileBytes = ReadFileStreamToByteArray(zipStream);
+            // boilerplate stolen from https://learn.microsoft.com/en-us/dotnet/api/system.io.filestream.read?view=net-11.0
+            byte[] fileBytes = new byte[zipStream.Length];
+            int numBytesToRead = (int)zipStream.Length;
+            int numBytesRead = 0;
+            while (numBytesToRead > 0)
             {
-                zipStream.CopyTo(memStream);
-                archive = new(memStream, ZipArchiveMode.Read, leaveOpen: true);
+                int n = zipStream.Read(fileBytes, numBytesRead, numBytesToRead);
+                // Break when the end of the file is reached.
+                if (n == 0)
+                {
+                    break;
+                }
+                numBytesRead += n;
+                numBytesToRead -= n;
             }
-            return new(archive, memStream);
+            if (doCRC32AndSaveStream)
+            {
+                MapCRC32Checksums.Add(Crc32.HashToUInt32(fileBytes));
+                MapFileStreams.Add(zipStream);
+                //MapFilePaths.Add(zipFilePath);
+            }
+            if (cacheRawBytes)
+            {
+                cachedMapRawBytes.Add(fileBytes.ToList());
+            }
+            zipStream.Position = 0;
+            return new(zipStream, ZipArchiveMode.Read);
         }
 
         // Finds all the files with a path that the predicate accepts as a string array 
@@ -1451,12 +1542,14 @@ first = true");*/
             Debug.Log($"{MapZipFiles.Length} .zip's");
             foreach (string zipFile in MapZipFiles)
             {
-                Tuple<ZipArchive, MemoryStream> combinedZipInfo = UnzipFile(zipFile);
+                zipArchives = [.. zipArchives, UnzipFile(zipFile, !CONFIG_forceDoNotReloadMapsFromStorageOnline.Value,
+                                                                    CONFIG_forceDoNotReloadMapsFromStorageOnline.Value)];
                 
-                zipArchives = [.. zipArchives, combinedZipInfo.Item1];
-                // this, probably wastes memory but also I need the extra control of just not freaking recompressing the user's zip with no way
-                // to turn it off when sending it.
-                MyZipArchiveStreams = [.. MyZipArchiveStreams, combinedZipInfo.Item2];
+                if (MapsUsableOnline.Count > 0 && MapsUsableOnline[MapsUsableOnline.Count - 1])
+                {
+                    numOfMapsUsableOnline++;
+                }
+
                 if (Path.GetFileName(zipFile) == "TESTING.zip")
                 {
                     zipArchives = [zipArchives[zipArchives.Length-1]];

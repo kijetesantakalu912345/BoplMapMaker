@@ -21,6 +21,7 @@ using System.Drawing;
 using System.Runtime.Remoting.Contexts;
 using Color = UnityEngine.Color;
 using Image = UnityEngine.UI.Image;
+using Unity.Mathematics;
 
 //using UnityEngine.UIElements;
 
@@ -43,17 +44,38 @@ namespace MapMaker
                     Debug.Log(warningCanvasObject.transform.GetChild(0));
                     var mainPanel = warningCanvasObject.transform.GetChild(0);
                     mainPanel.GetComponent<Image>().color = new Color(0.40392156862745f, 0.74901960784314f, 0.37254901960784f);
-                    mainPanel.GetComponent<RectTransform>().sizeDelta = new Vector2(878, 420); 
+                    //mainPanel.GetComponent<RectTransform>().sizeDelta = new Vector2(878, 420); 
                     var body = mainPanel.GetChild(0);
-                    body.GetComponent<RectTransform>().sizeDelta = new Vector2(360, 390);
+                    //body.GetComponent<RectTransform>().sizeDelta = new Vector2(360, 390);
                     var mainText = body.GetChild(0);
-                    mainText.GetComponent<TextMeshProUGUI>().color = new Color(0.6078431372549f, 1, 0.54117647058824f);
                     mainText.GetComponent<TextMeshProUGUI>().text = Plugin.MapJsons.Length > 1 
                         ? $"{Plugin.MapJsons.Length} maps\nloaded!" 
                         : $"{Plugin.MapJsons.Length} map\nloaded!";
                     var subText = mainPanel.transform.GetChild(0).GetChild(1);
-                    subText.GetComponent<TextMeshProUGUI>().text = "";
-                    subText.GetComponent<RectTransform>().sizeDelta = Vector2.zero;
+                    if (Plugin.numOfMapsUsableOnline != Plugin.MapJsons.Length)
+                    {
+                        mainPanel.GetComponent<Image>().color = new Color(1, 1, 0);
+                        mainText.GetComponent<TextMeshProUGUI>().color = Color.white;
+                        subText.GetComponent<TextMeshProUGUI>().color = Color.white;
+                        if (Plugin.numOfMapsUsableOnline == 0)
+                        {
+                            subText.GetComponent<TextMeshProUGUI>().text = "Warning: all of your maps are too large to send online. Local play is unaffected.";
+                        }
+                        else
+                        {
+                            //mainPanel.GetComponent<Image>().color = Color.yellow;
+                            subText.GetComponent<TextMeshProUGUI>().text = "Warning: only " + Plugin.numOfMapsUsableOnline + " out of " + Plugin.MapJsons.Length
+                            + " maps are usable online; some of your maps are too large to send. Local play is unaffected.";
+                        }
+                    }
+                    else
+                    {
+                        mainPanel.GetComponent<RectTransform>().sizeDelta = new Vector2(878, 420); 
+                        body.GetComponent<RectTransform>().sizeDelta = new Vector2(360, 390);
+                        mainText.GetComponent<TextMeshProUGUI>().color = new Color(0.6078431372549f, 1, 0.54117647058824f);
+                        subText.GetComponent<TextMeshProUGUI>().text = "";
+                        subText.GetComponent<RectTransform>().sizeDelta = Vector2.zero;
+                    }
                 }
             }
             
@@ -992,7 +1014,7 @@ namespace MapMaker
             [HarmonyPrefix]
             private static bool Awake_MapMaker_Plug(CharacterSelectHandler_online __instance, ref PlayerColors pcs)
             {
-                if (NetworkingStuff.isMapBeingTransmitted && NetworkingStuff.isFirstMap)
+                if (NetworkingStuff.IsMapBeingTransmitted && NetworkingStuff.IsFirstMap)
                 {
                     Plugin.logger.LogInfo("force NOT starting game");
                     return false; // in this case the start params won't be sent yet because the map hasn't been sent yet and it's easier to do it like this.
@@ -1212,8 +1234,7 @@ namespace MapMaker
                 __instance.currentLobby.SetData("LFM", "0");
                 __instance.currentLobby.SetFriendsOnly();
                 __instance.currentLobby.SetJoinable(false);
-                NetworkingStuff.isFirstMap = true;
-                NetworkingStuff.sendStartReqRightAfterMapSends = true;
+                NetworkingStuff.IsFirstMap = true;
                 NetworkingStuff.StartSendingMapInChunks();
                 return false;
             }
@@ -1221,22 +1242,21 @@ namespace MapMaker
             [HarmonyPrefix]
             private static bool Awake_MapMaker_Plug2(Player hostPlayer, NamedSpriteList abilityIcons, SteamManager __instance)
             {
-                // yeah no just ignore this stuff, I ended up just structuring my code differently.
-                // I'll probably remove these comments later but for now I'll leave them just in case they're useful.
-                // // TODO: make sure desyncs are handled correctly!
-                // // hmmm...
-                // // ok yeah handling desyncs correctly will require some shenanigans, I'll have to see when I get to the point of testing.
-                // if (NetworkingStuff.isMapBeingTransmitted && !NetworkingStuff.hasBetterStartReqPacketBeenPrepared && !NetworkingStuff.hasStartReqPacketBeenSent)
-                // {
-                //     //NetworkingStuff.preparedBetterStartRequestPacket
-                // }
-
-                // if a desync happens (and a client tries to go to the next round before the round has ended on the host's screen)*
-                // (* I think that's the only desync case where this would happen but I'm not technically 10000% sure),
-                // reuse the old start request packet instead of trying to prepare a new one.
-                NetworkingStuff.SendBetterStartRequestPacket(prepStartReqPacketFirst: NetworkingStuff.newMapWasPickedBeforeAttemptedHostNextLevel);
-                NetworkingStuff.newMapWasPickedBeforeAttemptedHostNextLevel = false;
+                NetworkingStuff.SendBetterStartRequestPacket();
                 return false;
+            }
+            [HarmonyPatch(nameof(SteamManager.SendStartSuggest))]
+            [HarmonyPrefix]
+            public static bool MapMaker_BlockSendStartSuggestIfDoNotSendStartSuggestFlag()
+            {
+                if (!SteamManager.LocalPlayerIsLobbyOwner && NetworkingStuff.ForceDoNotAttemptAnotherStartUntilMenuAwayFlag)
+                {
+                    return false;
+                }
+                else
+                {
+                    return true;
+                }
             }
         }
         [HarmonyPatch(typeof(GameSessionHandler))]
@@ -1266,6 +1286,9 @@ namespace MapMaker
                     Plugin.MetaDataJsons = MetaDataList.ToArray();
                     Plugin.MapIndiciesLeft = []; // gets refilled once RandomBagLevel() is called again.
                 }
+                NetworkingStuff.IsMapBeingTransmitted = false;
+                NetworkingStuff.ForceDoNotAttemptAnotherStartUntilMenuAwayFlag = false;
+                NetworkingStuff.NextMapByteChunks.Clear();
             }
             [HarmonyPatch("AnimateOutLevel")]
             [HarmonyPrefix]
@@ -1972,6 +1995,53 @@ namespace MapMaker
                 __result = queue;
             }
         }
+        [HarmonyPatch(typeof(SteamSocket))]
+        public class SteamSocketPatches
+        {
+            public static SteamId lastMessageSender;
+
+            // ok in theory I could try to fix this transpiler but the easier and faster solution is just gonna be storing the steamId of the person who
+            // sent any message received by OnMessage, even if they weren't specifically sending a start suggest.
+            // sure it's a bit less efficient but it's gonna barely matter performance wise and the time that I am saving is way more valuable.
+            // I need to get this update out very soon.
+            // [HarmonyPatch(nameof(SteamSocket.OnMessage))]
+            // [HarmonyTranspiler]
+            // public static IEnumerable<CodeInstruction> MapMaker_BeforeCallingNextLevelWasSuggestedTranspiler(IEnumerable<CodeInstruction> instructions)
+            // {
+            //     bool found = false;
+            //     MethodInfo nextLevelSuggestedMethod = Assembly.GetAssembly(typeof(CharacterStatsList))
+            //     .GetType(nameof(CharacterStatsList)).GetMethod(nameof(CharacterStatsList.OnNextLevelWasSuggested));
+
+            //     MethodInfo injectingMethod = typeof(SteamSocketPatches).GetMethod(nameof(SteamSocketPatches.OnRightBeforeNextLevelGetsSuggested));
+            //     Plugin.logger.LogInfo(injectingMethod == null);
+
+            //     foreach (CodeInstruction instruction in instructions)
+            //     {
+            //         if (instruction.Calls(nextLevelSuggestedMethod))
+            //         {
+            //             found = true;
+            //             yield return new CodeInstruction(System.Reflection.Emit.OpCodes.Ldarga_S, 2);
+            //             yield return new CodeInstruction(System.Reflection.Emit.OpCodes.Call, injectingMethod);
+            //         }
+            //         yield return instruction;
+            //     }
+            //     if (!found)
+            //     {
+            //         Plugin.logger.LogError("SteamSocket OnMessage transpiler failed! online play won't work correctly!");
+            //     }
+            // }
+            // public static void OnRightBeforeNextLevelGetsSuggested(NetIdentity identity)
+            // {
+            //     lastStartSuggestSender = identity.SteamId;
+            // }
+            [HarmonyPatch(nameof(SteamSocket.OnMessage))]
+            [HarmonyPrefix]
+            public static void MapMaker_storeSteamIdOfLastMessageSender(NetIdentity identity)
+            {
+                lastMessageSender = identity;
+            }
+        }
+
         [HarmonyPatch(typeof(CharacterStatsList))]
         public class CharacterStatsListPatches
         {
@@ -1979,9 +2049,16 @@ namespace MapMaker
             [HarmonyPrefix]
             private static bool Awake_MapMaker_Plug(int hostPlayerId, NamedSpriteList AbilityIcons, CharacterStatsList __instance)
             {
-                if (NetworkingStuff.isMapBeingTransmitted)
+                if (!GameSession.inMenus && (!NetworkingStuff.Host_EachPlayerLastAckedStartReq.ContainsKey(SteamSocketPatches.lastMessageSender)
+                || (NetworkingStuff.Host_EachPlayerLastAckedStartReq.ContainsKey(SteamSocketPatches.lastMessageSender)
+                && NetworkingStuff.Host_EachPlayerLastAckedStartReq[SteamSocketPatches.lastMessageSender] != Plugin.CurrentLevelIdForInputsOnlineThingy)))
                 {
-                    NetworkingStuff.sendStartReqRightAfterMapSends = true;
+                    Plugin.logger.LogInfo("rejecting start suggest from a player because they haven't acked the latest start request.");
+                    return false;
+                }
+
+                if (NetworkingStuff.IsMapBeingTransmitted)
+                {
                     return false;
                 }
                 if (CharacterStatsList.isLoading)
@@ -1993,21 +2070,60 @@ namespace MapMaker
                     CharacterStatsList.someoneSuggestedNextLevel = true;
                     return false;
                 }
-                SteamManager.instance.HostNextLevel(PlayerHandler.Get().GetPlayer(hostPlayerId), AbilityIcons);
-                CharacterStatsList.ForceNextLevelImmediately();
+                else // somebody has desynced! (... probably)
+                {
+                    // StartSendingMapInChunks()
+                    // send a packet that tells everybody else's game to call EndGameImmediately()
+                    // probably also disable selecting abilities in the menu to be safe(?)
+                    // to be fair desyncs are pretty rare so that probably wouldn't be necessary but I guess I'll see.
+                    // also set a flag to immediately send the start request and then on the host's side call `SteamManager.ForceLoadNextLevel();`
+                    // I might want to do ForceNextLevelImmediately() because that's how the game normally handles this edge case but ehh...
+                    // I'd rather just use ForceLoadNextLevel(), it ends up calling that other function eventually anyway.
+                    // SteamManager.instance.HostNextLevel(PlayerHandler.Get().GetPlayer(hostPlayerId), AbilityIcons);
+                    // CharacterStatsList.ForceNextLevelImmediately();
+                }
                 return false;
             }
 
             [HarmonyPatch(nameof(CharacterStatsList.TryStartNextLevel_online))]
             [HarmonyPrefix]
-            private static bool MapMaker_dontGoToNextRoundIfActivelySendingAMap()
+            private static bool MapMaker_dontGoToNextRoundIfActivelySendingAMap(bool allReady)
             {
-                if (NetworkingStuff.isMapBeingTransmitted)
+                if (NetworkingStuff.IsMapBeingTransmitted ||
+                    (SteamManager.LocalPlayerIsLobbyOwner && NetworkingStuff.ForceDoNotAttemptAnotherStartUntilMenuAwayFlag))
                 {
-                    NetworkingStuff.sendStartReqRightAfterMapSends = true;
                     return false;
                 }
+                if (allReady && SteamManager.LocalPlayerIsLobbyOwner)
+                {
+                    NetworkingStuff.ForceDoNotAttemptAnotherStartUntilMenuAwayFlag = true;
+                }
+                // if (SteamManager.LocalPlayerIsLobbyOwner)
+                // {
+                //     if (NetworkingStuff.Host_Flag_BlockSendingExtraStartRequestByHoldingNextLevelButton)
+                //     {
+                //         Plugin.logger.LogInfo("SteamManager.LocalPlayerIsLobbyOwner && "
+                //         + "NetworkingStuff.Host_Flag_BlockSendingExtraStartRequestByHoldingNextLevelButton");
+                //         return false;
+                //     }
+                //     else
+                //     {
+                //         NetworkingStuff.Host_Flag_BlockSendingExtraStartRequestByHoldingNextLevelButton = true;
+                //     }
+                // }
                 return true;
+            }
+            [HarmonyPatch(nameof(CharacterStatsList.OnEnable))]
+            [HarmonyPrefix]
+            public static void MapMaker_ExtraStartRequestSendingBugFix()
+            {
+                NetworkingStuff.ForceDoNotAttemptAnotherStartUntilMenuAwayFlag = false;
+            }
+            [HarmonyPatch(nameof(CharacterStatsList.OnDisable))]
+            [HarmonyPrefix]
+            public static void MapMaker_ExtraStartRequestSendingBugFix2()
+            {
+                NetworkingStuff.ForceDoNotAttemptAnotherStartUntilMenuAwayFlag = false;
             }
         }
     }
