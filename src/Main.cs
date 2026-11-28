@@ -46,7 +46,7 @@ namespace MapMaker
         public static Fix OneByOneBlockMass = Fix.One;
         public static string[] MapJsons;
         public static string[] MetaDataJsons;
-        public static Dictionary<string, byte[]> SpriteDataCache;
+        public static Dictionary<string, byte[]> LoadedSpritesFromMap;
         // Define a static logger instance SOMEONE PLEASE MAKE A LOGGER LATER!
         public static ManualLogSource logger;
         public static bool UseCustomTexture = false;
@@ -137,12 +137,11 @@ namespace MapMaker
             NoMapFoundWithId,
             MultipleMapsFoundWithId
         }
-        public static ConfigEntry<bool> CONFIG_forceDoNotReloadMapsFromStorageOnline;
+        //public static ConfigEntry<bool> CONFIG_forceDoNotReloadMapsFromStorageOnline; // this should be added back later but for now it's disabled.
         public static List<bool> MapsUsableOnline = []; // false where a map is too large to send, true elsewhere.
         public static int numOfMapsUsableOnline = 0;
-        public static List<uint> MapCRC32Checksums = []; // dependent on the value of CONFIG_forceDoNotReloadMapsFromStorageOnline
-        //public static List<string> MapFilePaths = []; // dependent on the value of CONFIG_forceDoNotReloadMapsFromStorageOnline
-        //public static MemoryStream[] MyZipArchiveStreams = [];
+        //public static List<uint> MapCRC32Checksums = []; // dependent on the value of CONFIG_forceDoNotReloadMapsFromStorageOnline
+        //public static MemoryStream[] MyZipArchiveStreams = []; // nah.
         // THIS IS ONLY USED WHEN IT IS ENABLED IN THE CONFIG, BECAUSE IT WASTES MEMORY TO AVOID RE-LOADING THE MAP FROM DISK WHEN SENDING IT TO OTHER PLAYERS
         // ONLINE, WHICH USUALLY ISN'T A TRADE OFF THAT IS WORTH IT!
         public static List<List<byte>> cachedMapRawBytes = [];
@@ -155,20 +154,18 @@ namespace MapMaker
             // Define the instance
             instance = this;
 
-            // load config value(s)
-            // maybe a setting for always being fine recompressing maps could be added but ehh...
-            // probably not worth the extra implementation effort and time. at least not right now.
-            CONFIG_forceDoNotReloadMapsFromStorageOnline = Config.Bind(
-                "Online settings",
-                "forceDoNotReloadMapsFromStorageOnline",
-                false,
-                "Save an extra copy of each map in memory so that when hosting an online match, when sending the next map after a round ends, "
-                + "the map file's raw bytes are loaded from memory instead of being loaded from disk.\n"
-                + "Enabling this setting is generally not worth it because it increases memory usage a lot for a fairly small gain, "
-                + "but if you have a lot of RAM or if you have very slow storage drives it might be worth it for you.\n"
-                + "This option only exists due to some weird shenanigans with C#'s ZipArchive class, having no public way to read the raw bytes of the zip, "
-                + "only publicly being able to read the contents of the file/folder entries contained in the zip."
-            );
+            // I do want to add this but I'm kinda just out of time.
+            // CONFIG_forceDoNotReloadMapsFromStorageOnline = Config.Bind(
+            //     "Online settings",
+            //     "forceDoNotReloadMapsFromStorageOnline",
+            //     false,
+            //     "Save an extra copy of each map in memory so that when hosting an online match, when sending the next map after a round ends, "
+            //     + "the map file's raw bytes are loaded from memory instead of being loaded from disk.\n"
+            //     + "Enabling this setting is generally not worth it because it increases memory usage a lot for a fairly small gain, "
+            //     + "but if you have a lot of RAM or if you have very slow storage drives it might be worth it for you.\n"
+            //     + "This option only exists due to some weird shenanigans with C#'s ZipArchive class, having no public way to read the raw bytes of the zip, "
+            //     + "only publicly being able to read the contents of the file/folder entries contained in the zip."
+            // );
 
             // Load the plugin
             NetworkingStuff.Awake();
@@ -229,32 +226,12 @@ namespace MapMaker
         public void Start()
         {
             Logger.LogWarning("######## Start() called");
-            // 268435456 is what the max send rate seemed to get capped to when I did (max int) - 1 when I read the config value back.
-            // hm...
-            // this value seems to be kinda random?
-            // maybe I need to effectively do what boplfix does...
-            // welp the docs don't seem to say anything about spamming calls to this function so I mean I can probably just-
-            int i_retryForBetterSendRateMax = 0;
-            while (i_retryForBetterSendRateMax < 100 && Steamworks.SteamNetworkingUtils.GetConfigInt(Steamworks.NetConfig.SendRateMax) < 1_000_000)
-            {
-                Steamworks.SteamNetworkingUtils.SetConfigInt(Steamworks.NetConfig.SendRateMax, 268435456);
-            }
-            Logger.LogInfo("max send rate: " + Steamworks.SteamNetworkingUtils.GetConfigInt(Steamworks.NetConfig.SendRateMax));
+            // this is the maximum send rate we can set.
+            // also yeah we have to set both of them for it to be consistent.
 
-            for (Fix i = (Fix)(-5); i < (Fix)6; i += (Fix)1)
-            {
-                for (Fix j = (Fix)(-5); j < (Fix)6; j += (Fix)1)
-                {
-                    if (Fix.Sqrt(i * i + j * j) == 0)
-                    {
-                        Logger.LogInfo("skipping (" + i + ", " + j + "). returned by mine: " +  Spawner.MyCalculateAngle(new Vec2((Fix)(j), (Fix)(i))));
-                        continue;
-                    }
-                    Logger.LogInfo("x: " + i + " y: " + j + " | AI: " +
-                        Spawner.CalculateAngle(new Vec2((Fix)(j), (Fix)(i))) + " | mine: " +  Spawner.MyCalculateAngle(new Vec2((Fix)(j), (Fix)(i)))
-                    );
-                }
-            }
+            Steamworks.SteamNetworkingUtils.SetConfigInt(Steamworks.NetConfig.SendRateMax, 268435456);
+            Steamworks.SteamNetworkingUtils.SetConfigInt(Steamworks.NetConfig.SendRateMin, 268435456);
+            Logger.LogInfo("max send rate: " + Steamworks.SteamNetworkingUtils.GetConfigInt(Steamworks.NetConfig.SendRateMax));
             ZipArchive[] zipArchives2;
             // If we are loading a replay the zip archive is already set
             if (!IsReplay())
@@ -270,7 +247,6 @@ namespace MapMaker
             // Create a List for the json for a bit
             List<string> JsonList = [];
             List<string> MetaDataList = [];
-            List<(string fileName, byte[] data)> SpriteDataList = [];
             foreach (ZipArchive zipArchive in zipArchives2)
             {
                 // Get the first .boplmap file if there is multiple. (THERE SHOULD NEVER BE MULTIPLE .boplmap's IN ONE .zip)
@@ -278,27 +254,6 @@ namespace MapMaker
                 {
                     JsonList.Add(GetFileFromZipArchive(zipArchive, IsBoplMap)[0]);
                     MetaDataList.Add(GetFileFromZipArchive(zipArchive, IsMetaDataFile)[0]);
-                    
-                    string[] spriteEntryNames = GetFileNamesFromZipArchive(zipArchive, IsSpriteFile);
-        
-                    foreach (var spriteEntryName in spriteEntryNames)
-                    {
-                        // Get the actual bytes using the entry name
-                        byte[] spriteBytes = ReadEntryFromZip(zipArchive, spriteEntryName);
-            
-                        // Now Path.GetFileName will work correctly because spriteEntryName is a valid path string
-                        string fileName = Path.GetFileName(spriteEntryName);
-            
-                        if (spriteBytes != null)
-                        {
-                            SpriteDataList.Add((fileName, spriteBytes));
-                            Debug.Log($"Cached Sprite: {fileName}, Size: {spriteBytes.Length} bytes");
-                        }
-                        else
-                        {
-                            Debug.LogWarning($"Failed to read sprite: {spriteEntryName}");
-                        }
-                    }
                 }
                 // IndexOutOfRangeException will be thrown if this zip file isn't a bopl map or is corrupt
                 catch (IndexOutOfRangeException e)
@@ -317,17 +272,6 @@ namespace MapMaker
             }
             MapJsons = [.. JsonList];
             MetaDataJsons = [.. MetaDataList];
-            SpriteDataCache = SpriteDataList.ToDictionary(x =>
-            {
-                Debug.Log($"Cached {x.fileName}");
-                return x.fileName;
-            }, x =>
-            {
-                Debug.Log($" with {x.data.Length} bytes");
-                return x.data;
-            });
-            
-            
 
             // Find the objects
             GameObject[] allObjects = Resources.FindObjectsOfTypeAll(typeof(GameObject)) as GameObject[];
@@ -548,10 +492,11 @@ namespace MapMaker
             }
         }
         // CALL ONLY ON LEVEL LOAD!
-        public static void LoadMapsFromFolder()
+        public static void LoadObjectsFromMapJson()
         {
             // Increment it when a new level is loaded.
             Debug.Log($"New level loaded! level id is now {CurrentLevelIdForInputsOnlineThingy}");
+            LoadedSpritesFromMap = new();
             if (MapJsons.Length != 0)
             {
                 var i = CurrentMapIndex;
@@ -564,6 +509,34 @@ namespace MapMaker
                     // map IDs are not actually UUIDs but it's too late to rename the json property now
                     if (Convert.ToInt32(Meta["MapUUID"]) == CurrentMapIntID || IsReplay() || IsInTestMode)
                     {
+                        List<(string fileName, byte[] data)> SpriteDataList = [];
+                        string[] spriteEntryNames = GetFileNamesFromZipArchive(zipArchives[CurrentMapIndex], IsSpriteFile);
+                        foreach (var spriteEntryName in spriteEntryNames)
+                        {
+                            // Get the actual bytes using the entry name
+                            byte[] spriteBytes = ReadEntryFromZip(zipArchives[CurrentMapIndex], spriteEntryName);
+                
+                            // Now Path.GetFileName will work correctly because spriteEntryName is a valid path string
+                            string fileName = Path.GetFileName(spriteEntryName);
+                
+                            if (spriteBytes != null)
+                            {
+                                SpriteDataList.Add((fileName, spriteBytes));
+                                Debug.Log($"Loaded Sprite: {fileName}, Size: {spriteBytes.Length} bytes");
+                            }
+                            else
+                            {
+                                Debug.LogWarning($"Failed to read sprite: {spriteEntryName}");
+                            }
+                        }
+                        LoadedSpritesFromMap = SpriteDataList.ToDictionary(x =>
+                        {
+                            return x.fileName;
+                        }, x =>
+                        {
+                            return x.data;
+                        });
+
                         Dictionary<string, object> Dict = MiniJSON.Json.Deserialize(mapJson) as Dictionary<string, object>;
                         SpawnPlatformsFromMap(Dict, i);
                         if (Dict.ContainsKey("AndGates"))
@@ -1332,7 +1305,7 @@ first = true");*/
                     // End its life
                     Updater.DestroyFix(tplatform.gameObject);
                 }
-                LoadMapsFromFolder();
+                LoadObjectsFromMapJson();
                 signalSystem.SetUpDicts();
                 Debug.Log("Signal stuff has loaded!");
             }
@@ -1437,7 +1410,7 @@ first = true");*/
         //     }
         // }
 
-        public static ZipArchive UnzipFile(string zipFilePath, bool doCRC32AndSaveStream = true, bool cacheRawBytes = false)
+        public static ZipArchive UnzipFile(string zipFilePath, bool SaveStream = true, bool cacheRawBytes = false)
         {
             // doesn't seem to end up leaking memory as long as you're careful?
             // if you're modifying this function make sure the memory usage doesn't increase by the size of your maps when launching the game
@@ -1448,11 +1421,13 @@ first = true");*/
             FileStream zipStream = new(zipFilePath, FileMode.Open);
 
             MapsUsableOnline.Add(zipStream.Length <= NetworkingStuff.MAX_FILE_SIZE);
-            // THIS CAUSES A MEMORY LEAK APPARENTLY! though only the size of your maps instead of twice the size of your maps?
+
+            // USING `ReadFileStreamToByteArray()` CAUSES A MEMORY LEAK APPARENTLY! though only the size of your maps instead of twice the size of your maps?
             // it's probably because we need to not dispose `zipStream` here... elsewhere it'd probably work but I also don't want to risk it.
             // maybe it was a coincidence????
-            // ok look whatever I'm just gonna leave it as is, it works and isn't leaking memory so it's fine.
             // byte[] fileBytes = ReadFileStreamToByteArray(zipStream);
+            // ok look whatever I'm just gonna leave it as is, the replacement I have for it here works and isn't leaking memory so it's fine.
+
             // boilerplate stolen from https://learn.microsoft.com/en-us/dotnet/api/system.io.filestream.read?view=net-11.0
             byte[] fileBytes = new byte[zipStream.Length];
             int numBytesToRead = (int)zipStream.Length;
@@ -1468,9 +1443,9 @@ first = true");*/
                 numBytesRead += n;
                 numBytesToRead -= n;
             }
-            if (doCRC32AndSaveStream)
+            if (SaveStream)
             {
-                MapCRC32Checksums.Add(Crc32.HashToUInt32(fileBytes));
+                //MapCRC32Checksums.Add(Crc32.HashToUInt32(fileBytes));
                 MapFileStreams.Add(zipStream);
                 //MapFilePaths.Add(zipFilePath);
             }
@@ -1542,8 +1517,9 @@ first = true");*/
             Debug.Log($"{MapZipFiles.Length} .zip's");
             foreach (string zipFile in MapZipFiles)
             {
-                zipArchives = [.. zipArchives, UnzipFile(zipFile, !CONFIG_forceDoNotReloadMapsFromStorageOnline.Value,
-                                                                    CONFIG_forceDoNotReloadMapsFromStorageOnline.Value)];
+                // zipArchives = [.. zipArchives, UnzipFile(zipFile, !CONFIG_forceDoNotReloadMapsFromStorageOnline.Value,
+                //                                                     CONFIG_forceDoNotReloadMapsFromStorageOnline.Value)];
+                zipArchives = [.. zipArchives, UnzipFile(zipFile, SaveStream: true, cacheRawBytes: false)];
                 
                 if (MapsUsableOnline.Count > 0 && MapsUsableOnline[MapsUsableOnline.Count - 1])
                 {
@@ -1965,6 +1941,19 @@ first = true");*/
             var cosh = (Fix.Pow((Fix)2.718281828459045, (Fix)(d)) + Fix.Pow((Fix)2.718281828459045, (Fix)(-d))) / (Fix)2;
             var sinh = (Fix.Pow((Fix)2.718281828459045, (Fix)d) - Fix.Pow((Fix)2.718281828459045, (Fix)(-d))) / (Fix)2;
             return sinh / cosh;
+        }
+
+        public static int GetColorIdFromMaterial(Material material)
+        {
+            PlayerColors playerColors = SteamManager.instance.networkClient.playerColors;
+            foreach (PlayerColor color in playerColors.playerColors)
+            {
+                if (color.playerMaterial == material)
+                {
+                    return color.colorIndex;
+                }
+            }
+            return 1;
         }
     }
 }

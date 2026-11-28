@@ -158,36 +158,13 @@ namespace MapMaker
             BoplBody boplBody = FixTransform.InstantiateFixed<BoplBody>(arrow, pos, angle);
             boplBody.Scale = scale;
             boplBody.StartVelocity = StartVel;
-            boplBody.rotation = CalculateAngle(StartVel);
+
+            //boplBody.rotation = LuaSpawner.CalculateAngle(StartVel);
+            // boplBody.up = Vec2.NormalizedVectorAngle
+
             boplBody.StartAngularVelocity = StartAngularVelocity;
             boplBody.GetComponent<SpriteRenderer>().material = WhiteSlimeMat;
             boplBody.GetComponent<SpriteRenderer>().color = ArrowOrBoulderColor;
-        }
-        //modifyed chatgpt code
-        // I'll probably just replace this with a version that uses Fix.Atan2()?
-        // because Fix.Acos just uses Fix.Atan internally and also I feel like using inverse tan just makes more sense here?
-        // also yeah honestly I don't really understand what the AI is doing here... like why in the world does a dot product help here?
-        // (1 day later)
-        // ok given how refX = 0 I can see more clearly what is going on here but yeah no I'm just gonna rewrite this and use Atan2.
-        // I will have to make sure that the rotations start at the same place but it shouldn't be too hard to just add a static offset
-        // if that's the case.
-        public static Fix CalculateAngle(Vec2 vec2)
-        {
-            // Vector (0, 1)
-            Fix refX = Fix.Zero;
-            Fix refY = Fix.One;
-
-            // Dot product
-            Fix dotProduct = vec2.x * refX + vec2.y * refY;
-
-            // Magnitudes
-            Fix magnitudeA = Fix.Sqrt(vec2.x * vec2.x + vec2.y * vec2.y);
-            Fix magnitudeB = Fix.Sqrt(refX * refX + refY * refY);
-
-            // Angle in radians
-            Fix angleRadians = Fix.Acos(dotProduct / (magnitudeA * magnitudeB));
-
-            return angleRadians;
         }
         public static Fix MyCalculateAngle(Vec2 vec2)
         {

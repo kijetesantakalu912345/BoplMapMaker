@@ -43,7 +43,6 @@ namespace MapMaker
                 {
                     Plugin.logger.LogWarning("Log from pipe inside Using");
                     pipeServer.ReadMode = PipeTransmissionMode.Byte;
-                    //part chatgpt
                     // Wait for a client to connect asynchronously, with cancellation support
                     Debug.Log("Waiting for client connection...");
                     Plugin.logger.LogWarning("Waiting for client connection...");
@@ -53,8 +52,7 @@ namespace MapMaker
                     Plugin.logger.LogWarning("Client connected.");
                     if (cancellationToken.IsCancellationRequested)
                     {
-                        //if we need to cansule it then return
-
+                        //if we need to cancel it then return
                         return;
                     }
                     //receive message from client
@@ -85,6 +83,7 @@ namespace MapMaker
                 Plugin.zipArchives = new ZipArchive[1];
                 Plugin.MapJsons = new string[1];
                 Plugin.MetaDataJsons = new string[1];
+                Plugin.LoadedSpritesFromMap = new();
                 Plugin.zipArchives[0] = zip;
                 Plugin.MapJsons[0] = Plugin.GetFileFromZipArchive(zip, Plugin.IsBoplMap)[0];
                 Plugin.IsInTestMode = true;

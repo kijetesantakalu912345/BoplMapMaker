@@ -39,9 +39,7 @@ namespace MapMaker
             {
                 if (Plugin.MyZipArchives.Any())
                 {
-                    Debug.Log(Plugin.MapJsons.Length);
                     var warningCanvasObject = GameObject.Find("WarningCanvas");
-                    Debug.Log(warningCanvasObject.transform.GetChild(0));
                     var mainPanel = warningCanvasObject.transform.GetChild(0);
                     mainPanel.GetComponent<Image>().color = new Color(0.40392156862745f, 0.74901960784314f, 0.37254901960784f);
                     //mainPanel.GetComponent<RectTransform>().sizeDelta = new Vector2(878, 420); 
@@ -1014,7 +1012,7 @@ namespace MapMaker
             [HarmonyPrefix]
             private static bool Awake_MapMaker_Plug(CharacterSelectHandler_online __instance, ref PlayerColors pcs)
             {
-                if (NetworkingStuff.IsMapBeingTransmitted && NetworkingStuff.IsFirstMap)
+                if (NetworkingStuff.IsMapBeingTransmitted && NetworkingStuff.IsFirstMap && SteamManager.instance.connectedPlayers.Count > 0)
                 {
                     Plugin.logger.LogInfo("force NOT starting game");
                     return false; // in this case the start params won't be sent yet because the map hasn't been sent yet and it's easier to do it like this.
@@ -1168,21 +1166,6 @@ namespace MapMaker
         //     }
         //     return true;
         // }
-        // [HarmonyPatch(typeof(AchievementHandler))]
-        // public static class AchievementHandlerPatches
-        // {
-        //     // I don't know *why* the game's OnRoundEnded() function is in the AchievementHandler class of all things, but it is.
-        //     // TO BE REMOVED ACTUALLY!!!!!!
-        //     [HarmonyPatch(nameof(AchievementHandler.OnRoundEnded))]
-        //     [HarmonyPostfix]
-        //     public static void SendMapOnRoundEnd()
-        //     {
-        //         if (GameLobby.isOnlineGame && SteamManager.LocalPlayerIsLobbyOwner)
-        //         {
-        //             NetworkingStuff.StartSendingMapInChunks();
-        //         }
-        //     }
-        // }
         [HarmonyPatch(typeof(SteamManager))]
         public class SteamManagerPatches
         {
@@ -1202,6 +1185,7 @@ namespace MapMaker
                     {
                         Debug.Log("someone joined us in test mode, putting the maps back to normal before sending them any maps");
                         //fill the MapJsons array up
+                        Plugin.logger.LogInfo("OnLobbyMemberJoinedCallback: setting Plugin.zipArchives = Plugin.MyZipArchives");
                         ZipArchive[] zipArchives = Plugin.MyZipArchives;
                         Plugin.zipArchives = Plugin.MyZipArchives;
                         //Create a List for the json for a bit
@@ -1215,9 +1199,56 @@ namespace MapMaker
                         }
                         Plugin.MapJsons = JsonList.ToArray();
                         Plugin.MetaDataJsons = MetaDataList.ToArray();
+                        Plugin.LoadedSpritesFromMap = new();
                     }
                 }
             }
+            // I could use TargetMethods but that also seems like it would be a lot messer.
+            [HarmonyPatch(nameof(SteamManager.OnLobbyMemberDisconnectedCallback))]
+            [HarmonyPrefix]
+            public static void MapMaker_MemberDisconnectedHook(Lobby arg1, Friend arg2)
+            {
+                MapMaker_OnMemberDisconnectOrLeave(arg1, arg2);
+            }
+            [HarmonyPatch(nameof(SteamManager.OnLobbyMemberLeaveCallback))]
+            [HarmonyPrefix]
+            public static void MapMaker_MemberLeftHook(Lobby arg1, Friend arg2)
+            {
+                MapMaker_OnMemberDisconnectOrLeave(arg1, arg2);
+            }
+            public static void MapMaker_OnMemberDisconnectOrLeave(Lobby arg1, Friend arg2)
+            {
+                if ((ulong)SteamManager.instance.currentLobby.Id != (ulong)arg1.Id)
+                {
+                    return;
+                }
+                if (SteamManager.LocalPlayerIsLobbyOwner)
+                {
+                    if(NetworkingStuff.IsMapBeingTransmitted)
+                    {
+                        NetworkingStuff.CancelSendingMapInChunks();
+                    }
+                    // just for the case that we previously weren't the host of this lobby.
+                    if (Plugin.zipArchives != Plugin.MyZipArchives)
+                    {
+                        Plugin.logger.LogInfo("MapMaker_OnMemberDisconnectOrLeave: setting Plugin.zipArchives = Plugin.MyZipArchives");
+                        Plugin.zipArchives = Plugin.MyZipArchives;
+                        List<string> JsonList = new List<string>();
+                        List<string> MetaDataList = new();
+                        foreach (ZipArchive zipArchive in Plugin.zipArchives)
+                        {
+                            //get the first .boplmap file if there is multiple. (THERE SHOULD NEVER BE MULTIPLE .boplmap's IN ONE .zip)
+                            JsonList.Add(Plugin.GetFileFromZipArchive(zipArchive, Plugin.IsBoplMap)[0]);
+                            MetaDataList.Add(Plugin.GetFileFromZipArchive(zipArchive, Plugin.IsMetaDataFile)[0]);
+                        }
+                        Plugin.MapJsons = JsonList.ToArray();
+                        Plugin.MetaDataJsons = MetaDataList.ToArray();
+                        Plugin.LoadedSpritesFromMap = new();
+                        Plugin.MapIndiciesLeft = []; // gets refilled once RandomBagLevel() is called again.
+                    }
+                }
+            }
+
             [HarmonyPatch("OnLevelWasLoaded")]
             [HarmonyPrefix]
             private static bool Awake_MapMaker_Plug(int level, SteamManager __instance)
@@ -1251,6 +1282,7 @@ namespace MapMaker
             {
                 if (!SteamManager.LocalPlayerIsLobbyOwner && NetworkingStuff.ForceDoNotAttemptAnotherStartUntilMenuAwayFlag)
                 {
+                    Plugin.logger.LogInfo("blocking SendStartSuggest due to ForceDoNotAttemptAnotherStartUntilMenuAwayFlag");
                     return false;
                 }
                 else
@@ -1263,6 +1295,15 @@ namespace MapMaker
         public class GameSessionHandlerPatches
         {
             [HarmonyPatch("LeaveGame")]
+            [HarmonyPrefix]
+            public static void MapMaker_LeaveGamePrefix(GameSessionHandler __instance)
+            {
+                if (SteamManager.LocalPlayerIsLobbyOwner && NetworkingStuff.IsMapBeingTransmitted)
+                {
+                    NetworkingStuff.CancelSendingMapInChunks();
+                }
+            }
+            [HarmonyPatch("LeaveGame")]
             [HarmonyPostfix]
             private static void Awake_MapMaker_Plug(GameSessionHandler __instance)
             {
@@ -1271,6 +1312,7 @@ namespace MapMaker
                     Debug.Log($"number of players is {SteamManager.startParameters.nrOfPlayers}");
                     //throw new NotImplementedException();
                     //fill the MapJsons array up
+                    Plugin.logger.LogInfo("LeaveGame: setting Plugin.zipArchives = Plugin.MyZipArchives");
                     ZipArchive[] zipArchives = Plugin.MyZipArchives;
                     Plugin.zipArchives = Plugin.MyZipArchives;
                     //Create a List for the json for a bit
@@ -1284,10 +1326,12 @@ namespace MapMaker
                     }
                     Plugin.MapJsons = JsonList.ToArray();
                     Plugin.MetaDataJsons = MetaDataList.ToArray();
+                    Plugin.LoadedSpritesFromMap = new();
                     Plugin.MapIndiciesLeft = []; // gets refilled once RandomBagLevel() is called again.
                 }
                 NetworkingStuff.IsMapBeingTransmitted = false;
                 NetworkingStuff.ForceDoNotAttemptAnotherStartUntilMenuAwayFlag = false;
+                NetworkingStuff.ForceDoNotAllowAbilityChangeUntilMenuAwayFlag = false;
                 NetworkingStuff.NextMapByteChunks.Clear();
             }
             [HarmonyPatch("AnimateOutLevel")]
@@ -1321,6 +1365,16 @@ namespace MapMaker
                 __instance._t = __instance.startProgressOfAnimateInGrounds;
                 __instance.levelAnimationRoutine.WhileLoop(new Func<Fix, bool>(__instance.AnimateOutLoop));
                 return false;
+            }
+            // again this won't necessarily catch every desync, it's just supposed to make the experience feel less janky most of the time that they happen.
+            [HarmonyPatch(nameof(GameSessionHandler.ActivateWinnerTriangle))]
+            [HarmonyPostfix]
+            public static void MapMaker_DesyncDejankifierPatch_ToSomeDegreeAtLeast()
+            {
+                if (SteamManager.LocalPlayerIsLobbyOwner)
+                {
+                    NetworkingStuff.ImmediatelyEndRoundForClientsThatHaveNotHadTheRoundEndYetChannel.SendMessage(1);
+                }
             }
         }
         [HarmonyPatch(typeof(PlayerAverageCamera))]
@@ -1440,40 +1494,37 @@ namespace MapMaker
             private static bool SaveReplay_MapMaker_Plug(Host __instance)
             {
                 Updater.gameHasStopped = true;
-                if (Host.recordReplay && __instance.inputRecording.Count != 0 && !(SteamManager.instance == null))
+                if (Host.recordReplay && __instance.inputRecording.Count != 0 && !(SteamManager.instance == null)
+                    && Plugin.CurrentMapIndex < Plugin.zipArchives.Length)
                 {
                     string arg = Application.persistentDataPath + "/replays/";
                     byte[] bytes = NetworkTools.SerializeReplay_compressed(__instance.inputRecording, __instance.EncodedStartRequest);
-                    ZipArchive zip = Plugin.zipArchives[Plugin.CurrentMapIndex];
-                    //chatgpt code
-                    using (var memoryStream = new MemoryStream())
+                    byte[] fileBytes = [];
+                    using (MemoryStream memStream = new MemoryStream())
                     {
-                        // Create a new ZipArchive in the MemoryStream
-                        using (var zipArchive = new ZipArchive(memoryStream, ZipArchiveMode.Create, true))
+                        using (ZipArchive reconstructedArchive = new ZipArchive(memStream, ZipArchiveMode.Create, true))
                         {
-                            foreach (var entry in zip.Entries)
+                            foreach (ZipArchiveEntry entry in Plugin.zipArchives[Plugin.CurrentMapIndex].Entries)
                             {
-                                var newEntry = zipArchive.CreateEntry(entry.FullName);
-                                using (var entryStream = entry.Open())
-                                using (var newEntryStream = newEntry.Open())
-                                {
-                                    entryStream.CopyTo(newEntryStream);
-                                }
+                                ZipArchiveEntry newEntry = reconstructedArchive.CreateEntry(entry.FullName);
+                                using (Stream entryStream = entry.Open())
+                                using (Stream newEntryStream = newEntry.Open())
+                                entryStream.CopyTo(newEntryStream);
                             }
                         }
-                        //my code
-                        //first the length
-                        var bytes2 = BitConverter.GetBytes(memoryStream.ToArray().Length).ToList();
-                        //now the zip
-                        bytes2.AddRange(memoryStream.ToArray().ToList());
-                        //then the main replay stuff
-                        bytes2.AddRange(bytes);
-
-                        Host.replaysSaved++;
-                        string str = arg + Host.replaysSaved + ".rep";
-                        File.WriteAllBytes(arg + Host.replaysSaved + ".rep", bytes2.ToArray());
-                        Debug.Log("saved replay " + str);
+                        fileBytes = memStream.ToArray();
                     }
+                    //first the length
+                    var bytes2 = BitConverter.GetBytes(fileBytes.Length).ToList();
+                    //now the zip
+                    bytes2.AddRange(fileBytes);
+                    //then the main replay stuff
+                    bytes2.AddRange(bytes);
+
+                    Host.replaysSaved++;
+                    string str = arg + Host.replaysSaved + ".rep";
+                    File.WriteAllBytes(arg + Host.replaysSaved + ".rep", bytes2.ToArray());
+                    Debug.Log("saved replay " + str);
                 }
                 __instance.inputRecording.Clear();
                 return false;
@@ -1846,23 +1897,18 @@ namespace MapMaker
         {
             private static StartRequestPacket ReadStartRequestReplay(byte[] data, ref byte[] uintConversionHelperArray, ref byte[] ulongConversionHelperArray, ref byte[] ushortConversionHelperArray)
             {
-                //edited chatgpt code (tryed myself for a while but eventualy just asked chatgpt to fix my code lol)
-                // Extract the ZIP size (first 4 bytes)
                 byte[] zipSizeBytes = new byte[4];
+                int zipSize;
                 Array.Copy(data, 0, zipSizeBytes, 0, 4);
-                int zipSize = BitConverter.ToInt32(zipSizeBytes, 0);
+                zipSize = BitConverter.ToInt32(zipSizeBytes, 0);
+                byte[] zipBytes = new byte[zipSize];
+                Array.Copy(data, 4, zipBytes, 0, zipSize);
 
-                // Extract the ZIP archive bytes
-                byte[] zipArchiveBytes = new byte[zipSize];
-                Array.Copy(data, 4, zipArchiveBytes, 0, zipSize);
-
-                // Create a memory stream for the ZIP archive
-                var memoryStream = new MemoryStream(zipArchiveBytes);
+                var memoryStream = new MemoryStream(zipBytes);
                 var zipArchive = new ZipArchive(memoryStream, ZipArchiveMode.Read);
-                // Replace the plugin's zip archive with the loaded one
-                Plugin.zipArchives = new[] { zipArchive };
+                
+                Plugin.zipArchives = [zipArchive];
                 Plugin.CurrentMapIndex = 0;
-                //my code
                 var __result = default(StartRequestPacket);
                 int num = zipSize + 4;
                 //game code
@@ -2059,28 +2105,28 @@ namespace MapMaker
 
                 if (NetworkingStuff.IsMapBeingTransmitted)
                 {
+                    Plugin.logger.LogInfo("rejecting start suggest: NetworkingStuff.IsMapBeingTransmitted");
                     return false;
                 }
                 if (CharacterStatsList.isLoading)
                 {
+                    Plugin.logger.LogInfo("rejecting start suggest: CharacterStatsList.isLoading");
                     return false;
                 }
                 if (GameSessionHandler.GameIsPaused)
                 {
+                    Plugin.logger.LogInfo("accepting start suggest.");
                     CharacterStatsList.someoneSuggestedNextLevel = true;
                     return false;
                 }
                 else // somebody has desynced! (... probably)
                 {
-                    // StartSendingMapInChunks()
-                    // send a packet that tells everybody else's game to call EndGameImmediately()
-                    // probably also disable selecting abilities in the menu to be safe(?)
-                    // to be fair desyncs are pretty rare so that probably wouldn't be necessary but I guess I'll see.
-                    // also set a flag to immediately send the start request and then on the host's side call `SteamManager.ForceLoadNextLevel();`
-                    // I might want to do ForceNextLevelImmediately() because that's how the game normally handles this edge case but ehh...
-                    // I'd rather just use ForceLoadNextLevel(), it ends up calling that other function eventually anyway.
-                    // SteamManager.instance.HostNextLevel(PlayerHandler.Get().GetPlayer(hostPlayerId), AbilityIcons);
-                    // CharacterStatsList.ForceNextLevelImmediately();
+                    Plugin.logger.LogInfo("it appears we have desynced; we have received a start request before the round has ended for us. "
+                    + "starting new round now...");
+                    GameSessionHandler.EndGameImmediately();
+                    NetworkingStuff.ImmediatelyEndRoundForClientsThatHaveNotHadTheRoundEndYetChannel.SendMessage(1);
+                    NetworkingStuff.ForceDoNotAllowAbilityChangeUntilMenuAwayFlag = true;
+                    NetworkingStuff.StartSendingMapInChunks();
                 }
                 return false;
             }
@@ -2092,6 +2138,7 @@ namespace MapMaker
                 if (NetworkingStuff.IsMapBeingTransmitted ||
                     (SteamManager.LocalPlayerIsLobbyOwner && NetworkingStuff.ForceDoNotAttemptAnotherStartUntilMenuAwayFlag))
                 {
+                    Plugin.logger.LogInfo("blocking TryStartNextLevel_online due to ForceDoNotAttemptAnotherStartUntilMenuAwayFlag");
                     return false;
                 }
                 if (allReady && SteamManager.LocalPlayerIsLobbyOwner)
@@ -2124,6 +2171,31 @@ namespace MapMaker
             public static void MapMaker_ExtraStartRequestSendingBugFix2()
             {
                 NetworkingStuff.ForceDoNotAttemptAnotherStartUntilMenuAwayFlag = false;
+                NetworkingStuff.ForceDoNotAllowAbilityChangeUntilMenuAwayFlag = false;
+                CharacterStatsList.isLoading = false;
+            }
+        }
+
+        // ok I would go and fix this and re-enable it but I'm just out of time and this is a quite rare edge case anyway.
+        // [HarmonyPatch(typeof(AbilitySelectController))]
+        // public class AbilitySelectControllerPatches
+        // {
+        //     [HarmonyPatch(nameof(AbilitySelectController.openCloseMenu))]
+        //     [HarmonyPrefix]
+        //     public static bool MapMaker_DisableAbilitySelectWhenRecoveringFromDesync()
+        //     {
+        //         return !NetworkingStuff.ForceDoNotAllowAbilityChangeUntilMenuAwayFlag;
+        //     }
+        // }
+
+        [HarmonyPatch(typeof(CharacterSelectBox))]
+        public class CharacterSelectBoxPatches
+        {
+            [HarmonyPatch(nameof(CharacterSelectBox.LateUpdate))]
+            [HarmonyPrefix]
+            public static bool DisableMenuIfMapIsSending()
+            {
+                return !NetworkingStuff.IsMapBeingTransmitted;
             }
         }
     }

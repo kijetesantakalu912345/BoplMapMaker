@@ -38,6 +38,7 @@ namespace MapMaker
         public static bool SendStartReqAndForceLoadNextLevelAfterMapSends = false;
         public static bool IsFirstMap = true;
         public static bool ForceDoNotAttemptAnotherStartUntilMenuAwayFlag = false;
+        public static bool ForceDoNotAllowAbilityChangeUntilMenuAwayFlag = false;
         //public static bool Host_DisableSendingAnotherStartReqWhileOnMenu = true;
         // // used by the host to queue up a start request and send it after the map finishes sending if we receive a start suggest before the map has been sent.
         //public static bool hasBetterStartReqPacketBeenPrepared = false;
@@ -75,13 +76,11 @@ namespace MapMaker
         // but doing so just makes things messier and harder to understand. it also creates a rather long variable name.
         public static EntwinedPacketChannel<byte> NewMapSendingStatusChannel;
         public static EntwinedPacketChannel<ZipChunkPacket> ZipChunkChannel;
-        public static EntwinedPacketChannel<ZipArchivePacket> OldZipChannel;
         public static EntwinedPacketChannel<BetterStartRequestPacket> StartChannel;
+        public static EntwinedPacketChannel<byte> ImmediatelyEndRoundForClientsThatHaveNotHadTheRoundEndYetChannel;
         //used to know if the ZipArchivePacket was received so that if it wasnt we can send it agien. this is the id of the zip that was received.
         //make sure everyone receives it.
         // (note from later: that isn't necessary, steamworks will handle resending maps for you if they get dropped.)
-        public static EntwinedPacketChannel<int> OldZipReceivedChannel;
-        public static uint LAST_nextChunkSize = 0;
         //public static bool Host_Flag_BlockSendingExtraStartRequestByHoldingNextLevelButton = false;
         private static bool AllChunksAcked = false;
         public static void Awake()
@@ -99,12 +98,8 @@ namespace MapMaker
             NewMapSendingStatusChannel.OnMessage += OnNewMapSendingStatus;
             StartRequestAckChannel = new EntwinedPacketChannel<byte>(Plugin.instance, singleByteEntwiner);
             StartRequestAckChannel.OnMessage += OnStartRequestAck;
-
-            var oldZipEntwiner = new GenericEntwiner<ZipArchivePacket>(ZipArchivePacketToByteArray, ByteArrayToZipArchivePacket);
-            OldZipChannel = new EntwinedPacketChannel<ZipArchivePacket>(Plugin.instance, oldZipEntwiner);
-            OldZipChannel.OnMessage += OnZipArchive;
-            OldZipReceivedChannel = new EntwinedPacketChannel<int>(Plugin.instance, new IntEntwiner());
-            OldZipReceivedChannel.OnMessage += OnZipReceivedConfirmed;
+            ImmediatelyEndRoundForClientsThatHaveNotHadTheRoundEndYetChannel = new EntwinedPacketChannel<byte>(Plugin.instance, singleByteEntwiner);
+            ImmediatelyEndRoundForClientsThatHaveNotHadTheRoundEndYetChannel.OnMessage += OnEndRoundIfRoundNotEndedAndHostTellsUsTo;
         }
         public static void Update()
         {
@@ -118,8 +113,13 @@ namespace MapMaker
 
             // (ack = acknowledgement)
             // when every player has acked the final map chunk, we handle sending the start request packet in the map chunk ack handling code.
-            if(IsMapBeingTransmitted && SteamManager.LocalPlayerIsLobbyOwner)
+            if(IsMapBeingTransmitted && SteamManager.LocalPlayerIsLobbyOwner && SteamManager.instance.connectedPlayers.Count > 0)
             {
+                if (!IsFirstMap && GameSession.inMenus)
+                {
+                    CancelSendingMapInChunks();
+                    return;
+                }
                 AllChunksAcked = true; // this will get set to false later in the loop unless the condition is actually supposed to be true.
 
                 // `PendingReliable` (`m_cbPendingReliable`) was publicly exposed to c# in facepunch steamworks *>= 6 years ago* [1],
@@ -146,14 +146,14 @@ namespace MapMaker
                     // + " loc: " + quickStatus.ConnectionQualityLocal + " rem: " + quickStatus.ConnectionQualityRemote
                     // + " buffer usage :" + (((double)quickStatus.CbPendingReliable / (double)SteamNetworkingUtils.SendBufferSize) * 100) + "% ");
 
-                    if (Host_EachPlayerLastAckedChunkNum[player.id] >= nextChunkNum - 1) // hopefully this doesn't byte underflow.
+                    if (Host_EachPlayerLastAckedChunkNum[player.id] >= nextChunkNum - 1 && nextChunkNum <= Host_LargeChunkAmountMinus1 + Host_SmallChunkAmount) 
                     {
                         uint nextChunkSize = Host_LargeChunkSize;
                         if (nextChunkNum > Host_LargeChunkAmountMinus1)
                         {
                             nextChunkSize = Host_SmallChunkSize;
                         }
-                        LAST_nextChunkSize = nextChunkSize;
+                        //LAST_nextChunkSize = nextChunkSize;
                         //Plugin.logger.LogInfo("nextChunkNum: " + nextChunkNum + ", Host_LargeChunkAmountMinus1: " + Host_LargeChunkAmountMinus1
                         //+ " nextChunkSize == Host_SmallChunkSize: " + (nextChunkSize == Host_SmallChunkSize));
                         SteamNetworkingQuickConnectionStatus quickStatus = new();
@@ -210,6 +210,23 @@ namespace MapMaker
                 }
             }
         }
+        
+        public static void CancelSendingMapInChunks()
+        {
+            Plugin.logger.LogInfo("cancelling sending map...");
+            IsMapBeingTransmitted = false;
+            SendStartReqAndForceLoadNextLevelAfterMapSends = false;
+            Host_EachPlayerLastAckedChunkNum = new();
+            Host_EachPlayerLastAckedStartReq = new();
+            Host_EachPlayerNextChunkNum = new();
+            ForceDoNotAttemptAnotherStartUntilMenuAwayFlag = false;
+            ForceDoNotAllowAbilityChangeUntilMenuAwayFlag = false;
+            if(CharacterSelectHandler_online.selfRef != null)
+            {
+                CharacterSelectHandler_online.selfRef.isStartingAGame = false;
+            }
+            NewMapSendingStatusChannel.SendMessage(2);
+        }
 
         // maybe I can make this easier by calling this on round end instead of HostGame()/HostNextLevel()/etc?
         // then just have those functions not be able to get called or have them return immediately if the map hasn't finished sending.
@@ -241,12 +258,6 @@ namespace MapMaker
         // prepareNextlevel() is basically just a wrapper around `GameSession.RandomBagLevel()` anyway.
         public static void StartSendingMapInChunks()
         {
-            // potentially re-roll for a higher max send rate.
-            int i_retryForBetterSendRateMax = 0;
-            while (i_retryForBetterSendRateMax < 10 && Steamworks.SteamNetworkingUtils.GetConfigInt(Steamworks.NetConfig.SendRateMax) < 1_000_000)
-            {
-                Steamworks.SteamNetworkingUtils.SetConfigInt(Steamworks.NetConfig.SendRateMax, 268435456);
-            }
             if (Plugin.numOfMapsUsableOnline == 0)
             {
                 Plugin.logger.LogError("You can't host this match because you have no maps that are usable online.");
@@ -256,13 +267,12 @@ namespace MapMaker
             Plugin.NextMapIndex = Plugin.RandomBagLevel();
             while (!Plugin.MapsUsableOnline[Plugin.NextMapIndex])
             {
-                Plugin.logger.LogWarning("Can't send map index " + Plugin.NextMapIndex + " because it is too large to send online, re-rolling...");
+                Plugin.logger.LogWarning("Can't send map index " + Plugin.NextMapIndex + " because it is too large, re-rolling...");
                 Plugin.NextMapIndex = Plugin.RandomBagLevel();
             }
             UnityEngine.Debug.Log($"sending map index {Plugin.NextMapIndex} in chunks now.");
-            if (!Plugin.CONFIG_forceDoNotReloadMapsFromStorageOnline.Value)
-            {
-                //bool tryReconstructingZipArchive = false;
+            // if (!Plugin.CONFIG_forceDoNotReloadMapsFromStorageOnline.Value)
+            // {
                 Plugin.MapFileStreams[Plugin.NextMapIndex].Position = 0;
                 byte[] fileBytes = new byte[Plugin.MapFileStreams[Plugin.NextMapIndex].Length];
                 int numBytesToRead = (int)Plugin.MapFileStreams[Plugin.NextMapIndex].Length;
@@ -279,79 +289,11 @@ namespace MapMaker
                     numBytesToRead -= n;
                 }
                 NextMapByteChunks = fileBytes.ToList();
-                // try to reload from storage, if the map is non-existent try to recompress it, but if it's too large then halt and catch fire.
-                // oh wait nevermind apparently I have to access the old handle that was being made.
-                // if (File.Exists(Plugin.MapFilePaths[Plugin.NextMapIndex]))
-                // {
-                //     using (FileStream zipStream = new(Plugin.MapFilePaths[Plugin.NextMapIndex], FileMode.Open))
-                //     {
-                //         // copied from `Plugin.UnzipFile()`, because trying to put this into its own function appears to cause a memory leak?
-                //         // or at the very least at this scale a potential memory leak is not worth the tradeoff of slightly less repetitve code.
-                //         byte[] fileBytes = new byte[zipStream.Length];
-                //         int numBytesToRead = (int)zipStream.Length;
-                //         int numBytesRead = 0;
-                //         while (numBytesToRead > 0)
-                //         {
-                //             int n = zipStream.Read(fileBytes, numBytesRead, numBytesToRead);
-                //             // Break when the end of the file is reached.
-                //             if (n == 0)
-                //             {
-                //                 break;
-                //             }
-                //             numBytesRead += n;
-                //             numBytesToRead -= n;
-                //         }
-                        
-                //         uint crc32 = Crc32.HashToUInt32(fileBytes);
-                //         if (Plugin.MapCRC32Checksums[Plugin.NextMapIndex] != crc32)
-                //         {
-                //             Plugin.logger.LogError("CRC32 checksum mismatch! file changed between when the game launched and now! this is unsupported!");
-                //             tryReconstructingZipArchive = true;
-                //         }
-                //         else
-                //         {
-                //             NextMapByteChunks = fileBytes.ToList();
-                //         }
-                //     }
-                // }
-                // else
-                // {
-                //     Plugin.logger.LogError("Map file apparently no longer exists.");
-                //     tryReconstructingZipArchive = true;
-                // }
-                // if (tryReconstructingZipArchive)
-                // {
-                //     Plugin.logger.LogInfo("as a backup, we'll attempt to send the map by reconstructing and recompressing a new zip.");
-                //     using (MemoryStream memStream = new MemoryStream())
-                //     {
-                //         using (ZipArchive reconstructedArchive = new ZipArchive(memStream, ZipArchiveMode.Create, true))
-                //         {
-                //             foreach (ZipArchiveEntry entry in Plugin.zipArchives[Plugin.NextMapIndex].Entries)
-                //             {
-                //                 ZipArchiveEntry newEntry = reconstructedArchive.CreateEntry(entry.FullName);
-                //                 using (Stream entryStream = entry.Open())
-                //                 using (Stream newEntryStream = newEntry.Open())
-                //                 entryStream.CopyTo(newEntryStream);
-                //             }
-                //         }
-                //         if (memStream.Length > MAX_FILE_SIZE)
-                //         {
-                //             // in theory I could try to go even deeper with the edge case handling here but like, I don't think that's super necessary.
-                //             Plugin.logger.LogError("Old file has been deleted or modified and the recompressed file is too large to send, aborting...");
-                //             GameSessionHandler.LeaveGame(abandonLobbyEntirely: true, sendOthersBackToAbilitySelect: true);
-                //             return;
-                //         }
-                //         else
-                //         {
-                //             NextMapByteChunks = memStream.ToArray().ToList();
-                //         }
-                //     }
-                // }
-            }
-            else
-            {
-                NextMapByteChunks = Plugin.cachedMapRawBytes[Plugin.NextMapIndex];
-            }
+            // }
+            // else
+            // {
+            //     NextMapByteChunks = Plugin.cachedMapRawBytes[Plugin.NextMapIndex];
+            // }
 
             Plugin.logger.LogInfo("preparing to send map that is " + NextMapByteChunks.Count + " bytes large");
             if (NextMapByteChunks.Count > MAX_FILE_SIZE)
@@ -377,7 +319,6 @@ namespace MapMaker
                 if (Host_SmallChunkSize > 0)
                 {
                     Host_SmallChunkAmount = 1;
-                    Host_LargeChunkAmountMinus1 -= 1;
                 }
                 else
                 {
@@ -507,6 +448,50 @@ namespace MapMaker
             }
             Host_EachPlayerLastAckedStartReq[sourceInfo.SenderSteamId] = levelIdForOnlineInputs;
         }
+        // I'll note that this isn't technically really needed, it'll just make desyncs feel less janky.
+        // though yeah there is a chance that this doesn't get triggered after a desync with really bad timing in which case the experience will be jankier,
+        // but nothing should break.
+        public static void OnEndRoundIfRoundNotEndedAndHostTellsUsTo(byte unusedByte, PacketSourceInfo sourceInfo)
+        {
+            if (!SteamManager.instance.currentLobby.IsOwnedBy(sourceInfo.Identity.SteamId))
+            {
+                Plugin.logger.LogInfo("ignroing request to end the round immediately on our end if it hasn't already that wasn't sent by the host.");
+                return;
+            }
+            if (WinnerTriangleCanvas.HasBeenSpawned)
+            {
+                foreach (AbilitySelectCircle abilityCircle in WinnerTriangleCanvas.instance.charStatsList.abilitySelectUi.Selectors)
+                {
+                    List<Player> list = PlayerHandler.Get().PlayerList();
+                    Player player = null;
+                    for (int i = 0; i < list.Count; i++)
+                    {
+                        if (list[i].IsLocalPlayer)
+                        {
+                            player = list[i];
+                        }
+                    }
+                    if (abilityCircle.GetPlayerId() == player.Id)
+                    {
+                        if (!abilityCircle.isWinner && abilityCircle.loser.isOpen)
+                        {
+                            abilityCircle.loser.openCloseMenu();
+                        }
+                    }
+                }
+            }
+            ForceDoNotAllowAbilityChangeUntilMenuAwayFlag = true;
+            if (GameSessionHandler.HasGameEnded() || GameSessionHandler.GameIsPaused)
+            {
+                return;
+            }
+            else
+            {
+                Plugin.logger.LogWarning("It appears a desync has happened and the round has already ended on somebody else's screen while it hasn't "
+                + "ended on your screen. As a recovery the round is immediately being ended and the next map is being sent.");
+                GameSessionHandler.EndGameImmediately();
+            }
+        }
         private static void PrepareBetterStartRequestPacket(int mapIndexToPrepare)
         {
             UnityEngine.Debug.Log("preparing start request packet now.");
@@ -545,11 +530,40 @@ namespace MapMaker
             SteamManager.startParameters.currentLevel = GameSession.CurrentLevel();
             SteamManager.startParameters.seed = (uint)Environment.TickCount;
             SteamManager.startParameters.p1_id = SteamClient.SteamId;
-            SteamManager.startParameters.p1_team = (byte)CharacterSelectHandler_online.localPlayerInit.team;
-            SteamManager.startParameters.p1_color = (byte)CharacterSelectHandler_online.localPlayerInit.color;
-            SteamManager.startParameters.p1_ability1 = (byte)CharacterSelectHandler_online.localPlayerInit.ability0;
-            SteamManager.startParameters.p1_ability2 = (byte)CharacterSelectHandler_online.localPlayerInit.ability1;
-            SteamManager.startParameters.p1_ability3 = (byte)CharacterSelectHandler_online.localPlayerInit.ability2;
+            if(IsFirstMap)
+            {
+                SteamManager.startParameters.p1_team = (byte)CharacterSelectHandler_online.localPlayerInit.team;
+                SteamManager.startParameters.p1_color = (byte)CharacterSelectHandler_online.localPlayerInit.color;
+                SteamManager.startParameters.p1_ability1 = (byte)CharacterSelectHandler_online.localPlayerInit.ability0;
+                SteamManager.startParameters.p1_ability2 = (byte)CharacterSelectHandler_online.localPlayerInit.ability1;
+                SteamManager.startParameters.p1_ability3 = (byte)CharacterSelectHandler_online.localPlayerInit.ability2;
+            }
+            else
+            {
+                // why zapray... oh well, at least this isn't so bad.
+                List<Player> list = PlayerHandler.Get().PlayerList();
+                Player player = null;
+                for (int i = 0; i < list.Count; i++)
+                {
+                    if (list[i].IsLocalPlayer)
+                    {
+                        player = list[i];
+                    }
+                }
+                Plugin.logger.LogInfo("player == null: " + (player == null));
+                SteamManager.startParameters.p1_team = (byte)player.Team;
+                SteamManager.startParameters.p1_color = (byte)Plugin.GetColorIdFromMaterial(player.Color);
+                SteamManager.startParameters.p1_ability1 = (byte)SteamManager.instance.abilityIcons.IndexOf(player.Abilities[0].name);
+                if (Settings.Get().NumberOfAbilities > 1)
+                {
+                    SteamManager.startParameters.p1_ability2 = (byte)SteamManager.instance.abilityIcons.IndexOf(player.Abilities[1].name);
+                }
+                if (Settings.Get().NumberOfAbilities > 2)
+                {
+                    SteamManager.startParameters.p1_ability3 = (byte)SteamManager.instance.abilityIcons.IndexOf(player.Abilities[2].name);
+                }
+            }
+
             if (SteamManager.instance.connectedPlayers.Count > 0)
             {
                 SteamManager.startParameters.p2_id = SteamManager.instance.connectedPlayers[0].id;
@@ -648,86 +662,22 @@ namespace MapMaker
             if (IsMapBeingTransmitted)
             {
                 Client_CurrentChunkNum = 0;
+                NextMapByteChunks.Clear();
                 Plugin.logger.LogInfo("chunk num reset");
-                // reroll for a potentially higher max send rate.
-                int i_retryForBetterSendRateMax = 0;
-                while (i_retryForBetterSendRateMax < 10 && Steamworks.SteamNetworkingUtils.GetConfigInt(Steamworks.NetConfig.SendRateMax) < 1_000_000)
-                {
-                    Steamworks.SteamNetworkingUtils.SetConfigInt(Steamworks.NetConfig.SendRateMax, 268435456);
-                }
+            }
+            if (typeByte == 2)
+            {
+                Plugin.logger.LogInfo("map send cancelled!");
+                NextMapByteChunks.Clear();
+                Client_CurrentChunkNum = 0;
+                ForceDoNotAttemptAnotherStartUntilMenuAwayFlag = false;
+                ForceDoNotAllowAbilityChangeUntilMenuAwayFlag = false;
+                // just in case
+                Host_EachPlayerLastAckedChunkNum = new();
+                Host_EachPlayerLastAckedStartReq = new();
+                Host_EachPlayerNextChunkNum = new();
             }
         }
-        public static byte[] ZipArchivePacketToByteArray(ZipArchivePacket archive)
-        {
-            //chatgpt code
-            using (var memoryStream = new MemoryStream())
-            {
-                // Create a new ZipArchive in the MemoryStream
-                using (var zipArchive = new ZipArchive(memoryStream, ZipArchiveMode.Create, true))
-                {
-                    foreach (var entry in archive.zip.Entries)
-                    {
-                        var newEntry = zipArchive.CreateEntry(entry.FullName);
-                        using (var entryStream = entry.Open())
-                        using (var newEntryStream = newEntry.Open())
-                        {
-                            entryStream.CopyTo(newEntryStream);
-                        }
-                    }
-                }
-                //my code
-                var bytes = memoryStream.ToArray().ToList();
-                bytes.AddRange(BitConverter.GetBytes(Plugin.zipArchives.Length));
-                bytes.AddRange(BitConverter.GetBytes(archive.id));
-                return bytes.ToArray();
-            }
-        }
-        public static ZipArchivePacket ByteArrayToZipArchivePacket(byte[] byteArray)
-        {
-            List<byte> bytes = byteArray.ToList();
-            bytes.RemoveRange(bytes.Count - 8, 8);
-            byte[] data = bytes.ToArray();
-            var memoryStream = new MemoryStream(data);
-            //https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/types/how-to-convert-a-byte-array-to-an-int
-            // If the system architecture is little-endian (that is, little end first),
-            // reverse the byte array.
-            byte[] bytes2 = { byteArray[byteArray.Length - 8], byteArray[byteArray.Length - 7], byteArray[byteArray.Length - 6], byteArray[byteArray.Length - 5] };
-            byte[] bytes3 = { byteArray[byteArray.Length - 4], byteArray[byteArray.Length - 3], byteArray[byteArray.Length - 2], byteArray[byteArray.Length - 1] };
-            //idk why but the microsoft exsample is backwords?
-            if (!BitConverter.IsLittleEndian)
-            {
-                Array.Reverse(bytes2);
-                Array.Reverse(bytes3);
-            }
-            var zipPacket = new ZipArchivePacket
-            {
-                zip = new ZipArchive(memoryStream, ZipArchiveMode.Read),
-                amountOfZips = BitConverter.ToInt32(bytes2, 0),
-                id = BitConverter.ToInt32(bytes3, 0)
-            };
-            return zipPacket;
-        }
-        public static void OnZipArchive(ZipArchivePacket payload, PacketSourceInfo sourceInfo)
-        {
-            //if its the host we add them to the list of zip archives and do the rest of the initalison for them.
-            if (SteamManager.instance.currentLobby.IsOwnedBy(sourceInfo.Identity.SteamId))
-            {
-                UnityEngine.Debug.Log($"length of zip array is {payload.amountOfZips}");
-                UnityEngine.Debug.Log($"id is {payload.id}");
-                if (Plugin.zipArchives.Length < payload.amountOfZips)
-                {
-                    Plugin.zipArchives = new ZipArchive[payload.amountOfZips];
-                    Plugin.MapJsons = new string[payload.amountOfZips];
-                    Plugin.MetaDataJsons = new string[payload.amountOfZips];
-                }
-                Plugin.zipArchives[payload.id] = payload.zip;
-                Plugin.MapJsons[payload.id] = Plugin.GetFileFromZipArchive(payload.zip, Plugin.IsBoplMap)[0];
-                Plugin.MetaDataJsons[payload.id] = Plugin.GetFileFromZipArchive(payload.zip, Plugin.IsMetaDataFile)[0];
-                //confirm we got the packet
-                OldZipReceivedChannel.SendMessage(payload.id);
-            }
-        }
-
         public static byte[] BetterStartRequestPacketToByteArray(BetterStartRequestPacket BetterStartRequest)
         {
             StartRequestPacket startRequest = BetterStartRequest.startRequest;
@@ -773,9 +723,13 @@ namespace MapMaker
                 Plugin.CurrentMapIndex = 0;
 
                 // load the new map from NextMapByteChunks, and unload any other maps.
+                Plugin.logger.LogInfo("NextMapByteChunks.ToArray() length: " + NextMapByteChunks.ToArray().Length);
+                Plugin.logger.LogInfo("setting Plugin.zipArchives = [(the last zip archive sent by the host)]");
                 Plugin.zipArchives = [new ZipArchive(new MemoryStream(NextMapByteChunks.ToArray()), ZipArchiveMode.Read)]; // POSSIBLE MEMORY LEAK
                 Plugin.MapJsons = [Plugin.GetFileFromZipArchive(Plugin.zipArchives[Plugin.CurrentMapIndex], Plugin.IsBoplMap)[0]];
                 Plugin.MetaDataJsons = [Plugin.GetFileFromZipArchive(Plugin.zipArchives[Plugin.CurrentMapIndex], Plugin.IsMetaDataFile)[0]];
+                // nah this isn't necessary, the sprites get loaded later when we're setting the map up.
+                //Plugin.LoadedSpritesFromMap = new();
                 NextMapByteChunks.Clear();
 
                 Plugin.CurrentLevelIdForInputsOnlineThingy = payload.MapIdForInputStuff;
@@ -829,27 +783,6 @@ namespace MapMaker
                 return;
             }
         }
-        public static void OnZipReceivedConfirmed(int payload, PacketSourceInfo sourceInfo)
-        {
-            if (payload == Plugin.NextMapIndex)
-            {
-                OLD_I_THINK_hasFullyReceivedLatestZip[sourceInfo.SenderSteamId] = true;
-            }
-        }
-        // public static int GetDelayForResendingZip()
-        // {
-        //     float maxPing = 0;
-        //     foreach (var connection in SteamManager.instance.connectedPlayers)
-        //     {
-        //         if (connection.ping > maxPing)
-        //         {
-        //             maxPing = connection.ping;
-        //         }
-        //     }
-        //     UnityEngine.Debug.Log(maxPing);
-        //     //the ping in milliseconds + 250 miliseconds of leway
-        //     return (int)(maxPing * 1000f) + 250;
-        // }
     }
     public struct ZipChunkPacket
     {

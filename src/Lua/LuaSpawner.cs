@@ -174,7 +174,7 @@ namespace MapMaker.Lua_stuff
             BoplBody boplBody = FixTransform.InstantiateFixed<BoplBody>(arrow, pos);
             boplBody.Scale = scale;
             boplBody.StartVelocity = StartVel;
-            boplBody.rotation = CalculateAngle(StartVel);
+            //boplBody.rotation = CalculateAngle(StartVel);
             boplBody.GetComponent<SpriteRenderer>().material = WhiteSlimeMat;
             boplBody.GetComponent<SpriteRenderer>().color = color;
             return boplBody;
@@ -258,7 +258,7 @@ namespace MapMaker.Lua_stuff
             BoplBody boplBody = FixTransform.InstantiateFixed<BoplBody>(missile, pos);
             boplBody.Scale = scale;
             boplBody.StartVelocity = StartVel;
-            boplBody.fixTrans.rotation = -CalculateAngle(StartVel);
+            boplBody.fixTrans.rotation = (Vec2.NormalizedVectorAngle(Vec2.NormalizedSafe(StartVel)) - Fix.PiOver2) % Fix.PiTimes2;
             boplBody.GetComponent<SpriteRenderer>().material = WhiteSlimeMat;
             boplBody.GetComponent<SpriteRenderer>().color = color;
             //boplBody.rotation = CalculateAngle(StartVel);
@@ -330,23 +330,23 @@ namespace MapMaker.Lua_stuff
         {
             try
             {
-                foreach (var entry in Plugin.SpriteDataCache)
-                {
-                    Debug.Log(entry);
-                }
+                // foreach (var entry in Plugin.LoadedSpritesFromMap)
+                // {
+                //     Debug.Log(entry);
+                // }
                 // Try to get just the filename from the path
                 string fileName = Path.GetFileName(filePath);
                 byte[] fileData = null;
         
                 // Check cache by filename first
-                if (Plugin.SpriteDataCache.ContainsKey(fileName))
+                if (Plugin.LoadedSpritesFromMap.ContainsKey(fileName))
                 {
-                    fileData = Plugin.SpriteDataCache[fileName];
+                    fileData = Plugin.LoadedSpritesFromMap[fileName];
                 }
                 // If not found, try the full path
-                else if (Plugin.SpriteDataCache.ContainsKey(filePath))
+                else if (Plugin.LoadedSpritesFromMap.ContainsKey(filePath))
                 {
-                    fileData = Plugin.SpriteDataCache[filePath];
+                    fileData = Plugin.LoadedSpritesFromMap[filePath];
                 }
         
                 if (fileData != null)
@@ -374,29 +374,6 @@ namespace MapMaker.Lua_stuff
                 Debug.LogError($"Error loading texture from cache {filePath}: {e.Message}");
             }
             return null;
-        }
-
-        // (based on chatgpt code, at least presumably given Spawner.cs's very similar but slightly different version)
-        public static Fix CalculateAngle(Vec2 vec2)
-        {
-            // Vector (0, 1)
-            Fix refX = Fix.Zero;
-            Fix refY = Fix.One;
-            if (vec2.y != 0)
-            {
-                // Dot product
-                Fix dotProduct = vec2.x * refX + vec2.y * refY;
-
-                // Magnitudes
-                Fix magnitudeA = Fix.Sqrt(vec2.x * vec2.x + vec2.y * vec2.y);
-                Fix magnitudeB = Fix.Sqrt(refX * refX + refY * refY);
-
-                // Angle in radians
-                Fix angleRadians = Fix.Acos(dotProduct / (magnitudeA * magnitudeB));
-
-                return angleRadians;
-            }
-            return Fix.Zero;
         }
         public static BoplBody SpawnGrenade(Vec2 pos, Fix angle, Fix scale, Vec2 StartVel, Fix StartAngularVelocity, Fix FuseSeconds)
         {
